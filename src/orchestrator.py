@@ -1,5 +1,5 @@
-
 import os
+import ffmpeg
 from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
@@ -43,17 +43,10 @@ class Orchestrator:
                 context = vob["context"]
                 original_filename = vob["filename"] # e.g. VTS_01_1.VOB
 
-                # Extract Chapter Number from filename if possible (VTS_01_1 -> Ch01)
-                # Or VTS_01_1 -> Ch1-1?
-                # The requirements say: Name Construction: Combine the Folder Context + Chapter Number + AI Description.
-                # Example: Christmas 2004 - Ch01 - Kids Opening Presents.mp4
-                # VOB names are usually VTS_XX_Y.VOB.
-                # Let's try to parse XX and Y.
-
+                # Extract Chapter Number from filename if possible
                 parts = input_file.stem.split('_')
                 chapter_str = "ChXX"
                 if len(parts) >= 3 and parts[0] == "VTS":
-                    # VTS_01_1 -> parts = ['VTS', '01', '1']
                     try:
                         title_set = parts[1]
                         title_num = parts[2]
@@ -61,31 +54,78 @@ class Orchestrator:
                     except:
                         pass
 
-                progress.update(task, description=f"Processing {context} - {original_filename}")
+                progress.update(task, description=f"Analyzing scenes in {context} - {original_filename}")
 
-                # Stage B: Visionary
-                temp_image_path = Path(self.output_path) / "temp_frame.jpg"
-                if self.visionary.extract_frame(input_file, temp_image_path):
-                    description = self.visionary.get_description(temp_image_path)
-                    # Clean description
-                    description = "".join([c for c in description if c.isalnum() or c in " -_"]).strip()
-                else:
-                    description = f"{original_filename}"
+                # Scene Detection
+                scenes = self.transcoder.detect_scenes(input_file)
+                if not scenes:
+                    # Fallback to whole file if no scenes detected or error
+                    # Assuming detection might fail or return empty list if only one scene
+                    try:
+                        probe = ffmpeg.probe(str(input_file))
+                        video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+                        duration = float(video_info['duration'])
+                        scenes = [(0.0, duration)]
+                    except:
+                        console.print(f"[bold red]Could not probe file {input_file}, skipping.[/bold red]")
+                        progress.advance(task)
+                        continue
 
-                # Construct new filename
-                new_filename = f"{context} - {chapter_str} - {description}.mp4"
-                output_file = Path(self.output_path) / new_filename
+                for i, (start, end) in enumerate(scenes):
+                    scene_idx = i + 1
+                    duration = end - start
+                    if duration < 1.0: # Skip very short scenes
+                        continue
 
-                # Stage C: Transcoder
-                progress.update(task, description=f"Transcoding to {new_filename}")
-                if self.transcoder.transcode(input_file, output_file):
-                    console.print(f"[bold blue]Completed:[/bold blue] {new_filename}")
-                else:
-                    console.print(f"[bold red]Failed:[/bold red] {input_file}")
+                    # Stage B: Visionary (Thumbnails & Naming)
+                    description = ""
+                    if self.api_key:
+                        # Extract multiple thumbnails
+                        # 3 thumbnails: 20%, 50%, 80%
+                        ts_list = [start + duration * 0.2, start + duration * 0.5, start + duration * 0.8]
+                        img_paths = []
+                        for j, ts in enumerate(ts_list):
+                            p = Path(self.output_path) / f"temp_frame_{scene_idx}_{j}.jpg"
+                            img_paths.append(p)
 
-                # Cleanup temp image
-                if temp_image_path.exists():
-                    temp_image_path.unlink()
+                        if self.visionary.extract_frames(input_file, ts_list, img_paths):
+                            desc = self.visionary.get_description(img_paths)
+                            description = "".join([c for c in desc if c.isalnum() or c in " -_"]).strip()
+                            # Clean up temp images
+                            for p in img_paths:
+                                if p.exists():
+                                    p.unlink()
+
+                    # If AI unavailable or failed, use generic name
+                    if not description:
+                         # If AI is not available, skip naming as per instructions
+                         # "If the AI part isn't available, it should directly convert the VOB to video files and skip the AI naming."
+                         # So we name it generically.
+                         # Note: We shouldn't use "Scene X" as description if we want to strictly follow "Scene X" as unique identifier logic below.
+                         # But if we put it here, it will be "Scene 001 - Scene 1.mp4" if we aren't careful.
+                         # Let's make description empty if it's just generic?
+                         # No, we need a name.
+                         description = f"Scene {scene_idx}"
+
+                    # Construct new filename with unique scene index to prevent overwrites
+                    # Format: {context} - {chapter_str} - Scene {scene_idx:03d} - {description}.mp4
+                    # If description is "Scene X", we might want to avoid redundancy, but safety first.
+                    # If description is "Scene 1", filename becomes "... - Scene 001 - Scene 1.mp4". A bit redundant but safe.
+                    # Better: if description is "Scene {scene_idx}", we can just use that.
+
+                    if description == f"Scene {scene_idx}":
+                         new_filename = f"{context} - {chapter_str} - Scene {scene_idx:03d}.mp4"
+                    else:
+                         new_filename = f"{context} - {chapter_str} - Scene {scene_idx:03d} - {description}.mp4"
+
+                    output_file = Path(self.output_path) / new_filename
+
+                    # Stage C: Transcode Segment
+                    progress.update(task, description=f"Transcoding {new_filename}")
+                    if self.transcoder.transcode_segment(input_file, output_file, start, end):
+                        console.print(f"[bold blue]Completed:[/bold blue] {new_filename}")
+                    else:
+                        console.print(f"[bold red]Failed:[/bold red] {new_filename}")
 
                 progress.advance(task)
 
