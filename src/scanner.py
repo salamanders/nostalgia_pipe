@@ -9,8 +9,8 @@ class Scanner:
 
     def scan(self) -> List[Dict]:
         """
-        Recursively scan the input path for VIDEO_TS folders and return a list of VOB files
-        that meet the criteria (>100MB).
+        Recursively scan the input path for VIDEO_TS folders and return a list of VOB files.
+        Ignores tiny files (<= 1KB) to avoid artifacts, but processes all other content.
         """
         vob_files = []
 
@@ -40,8 +40,8 @@ class Scanner:
 
                 # Scan files in VIDEO_TS
                 for video_file in video_ts_path.glob("*.VOB"):
-                    # Heuristic: > 100MB
-                    if video_file.stat().st_size > 100 * 1024 * 1024: # 100MB
+                    # Heuristic: Ignore tiny files/artifacts (<= 1KB)
+                    if video_file.stat().st_size > 1024:
                         vob_files.append({
                             "path": video_file,
                             "context": context,
