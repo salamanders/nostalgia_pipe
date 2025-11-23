@@ -25,7 +25,6 @@ The application should function in a pipeline with three distinct stages:
 1. Recursively scan a user-provided INPUT\_DIR.  
 2. Identify "DVD structure" folders (folders containing a VIDEO\_TS subdirectory).  
 3. Inside VIDEO\_TS, identify valid content files (.VOB).  
-   * **Heuristic:** Ignore small "Menu" or "Warning" files (e.g., files \< 100MB).  
    * **Target:** Usually files named VTS\_01\_1.VOB, VTS\_01\_2.VOB, etc.  
 4. **Context Gathering:** Capture the directory path.  
    * *Example:* If path is F:/HomeMovies/Christmas 2004/VIDEO\_TS/VTS\_01\_1.VOB, the context is "Christmas 2004".
