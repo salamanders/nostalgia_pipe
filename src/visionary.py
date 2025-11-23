@@ -1,9 +1,9 @@
-
 import ffmpeg
 import google.generativeai as genai
 from pathlib import Path
 import os
 import time
+from typing import List, Union
 
 class Visionary:
     def __init__(self, api_key: str):
@@ -39,31 +39,57 @@ class Visionary:
             print(f"Error extracting frame from {video_path}: {e}")
             return False
 
-    def get_description(self, image_path: Path) -> str:
+    def extract_frames(self, video_path: Path, timestamps: List[float], output_paths: List[Path]):
         """
-        Sends the image to Gemini API to get a description.
+        Extracts frames at specified timestamps.
+        """
+        success = True
+        for ts, out_path in zip(timestamps, output_paths):
+            try:
+                (
+                    ffmpeg
+                    .input(str(video_path), ss=ts)
+                    .filter('scale', -1, 720)
+                    .output(str(out_path), vframes=1)
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            except Exception as e:
+                print(f"Error extracting frame at {ts} from {video_path}: {e}")
+                success = False
+        return success
+
+    def get_description(self, image_input: Union[Path, List[Path]]) -> str:
+        """
+        Sends the image(s) to Gemini API to get a description.
         """
         if not self.model:
             # Mock response if no API key
             return "Unidentified Event"
 
         try:
-            # Upload the file
-            # But we can just pass the path or image data depending on the library version.
-            # Using File API or inline data.
-            # Let's try uploading to File API as it's cleaner for large images, or PIL image.
+            content = []
+            images_to_delete = []
 
-            # For simplicity, let's use the file API if available or just pass the image path if supported.
-            # The standard way now is often:
-            myfile = genai.upload_file(image_path)
+            if isinstance(image_input, list):
+                for img_path in image_input:
+                    myfile = genai.upload_file(img_path)
+                    content.append(myfile)
+                    # We shouldn't delete them here immediately because the API call needs them,
+                    # but typically upload_file returns a handle that is valid.
+            else:
+                myfile = genai.upload_file(image_input)
+                content.append(myfile)
 
             prompt = (
-                "Analyze this image from a home movie. Provide a succinct, 3-5 word filename description "
+                "Analyze these images from a scene in a home movie. Provide a succinct, 3-5 word filename description "
                 "of the event or action (e.g., 'Kids Opening Presents', 'Grandma Blowing Candles', 'Beach Volleyball'). "
                 "Do not include file extensions."
             )
 
-            result = self.model.generate_content([myfile, prompt])
+            content.append(prompt)
+
+            result = self.model.generate_content(content)
             return result.text.strip()
         except Exception as e:
             print(f"Error getting description from Gemini: {e}")

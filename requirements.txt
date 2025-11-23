@@ -2,3 +2,5 @@ ffmpeg-python
 rich
 google-generativeai
 python-dotenv
+scenedetect
+opencv-python-headless
