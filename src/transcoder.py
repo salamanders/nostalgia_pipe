@@ -1,14 +1,10 @@
 import ffmpeg
+import subprocess
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
-from scenedetect import detect, ContentDetector
+from typing import List, Tuple, Dict, Any, Optional
 
 class Transcoder:
     def get_audio_settings(self, input_path: Path) -> Dict[str, Any]:
-        """
-        Determines audio settings based on the input file's audio codec.
-        If the audio is AC3, we copy it. Otherwise, we re-encode to AAC.
-        """
         try:
             probe = ffmpeg.probe(str(input_path))
             audio_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)
@@ -19,113 +15,96 @@ class Transcoder:
                 return {'acodec': 'aac', 'audio_bitrate': '256k'}
         except Exception as e:
             print(f"Error probing audio for {input_path}: {e}")
-            # Fallback to safe AAC encoding
             return {'acodec': 'aac', 'audio_bitrate': '256k'}
 
-    def transcode(self, input_path: Path, output_path: Path):
+    def create_proxy(self, input_path: Path, output_path: Path) -> bool:
         """
-        Transcodes the VOB file to MP4 using specific archival settings.
+        Creates a highly compressed proxy video for AI analysis.
+        Resolution: 360p
+        FPS: 5
+        Audio: Mono, 32k AAC
         """
-        # Breakdown of the flags:
-        # bwdif=mode=1: This is the magic switch.
-        #   mode=0: Same framerate (30fps). Avoid.
-        #   mode=1: Double framerate (60fps). Use this. It outputs one frame for every field.
-        # format=yuv420p10le: This ensures the processing pipeline happens in 10-bit.
-        #   Even though your DVD source is 8-bit, deinterlacing involves interpolation (creating new pixels).
-        #   Doing this math in 10-bit prevents "banding" in the blue gradients of the sky.
-        # -c:a copy: (If AC3) This passes the audio through untouched.
-        #   DVD audio is usually AC3 or PCM, which Google Photos handles fine.
-        #   Re-compressing it to AAC would only lose quality.
-        # -movflags +faststart: Moves the metadata to the front of the file.
-        #   This allows the video to start playing immediately on Google Photos/Web browsers before the whole file is downloaded.
-
-        audio_settings = self.get_audio_settings(input_path)
-
         try:
             (
                 ffmpeg
                 .input(str(input_path))
                 .output(
                     str(output_path),
-                    vcodec='libx265',
-                    crf=18,
-                    preset='slower',
-                    vf='bwdif=mode=1,format=yuv420p10le',
-                    pix_fmt='yuv420p10le',
-                    movflags='+faststart',
-                    **audio_settings
+                    vf='scale=-1:360',
+                    r=5,
+                    vcodec='libx264',
+                    crf=32,
+                    preset='veryfast',
+                    acodec='aac',
+                    audio_bitrate='32k',
+                    ac=1
                 )
                 .overwrite_output()
                 .run(quiet=True)
             )
             return True
-        except ffmpeg.Error as e:
-            print(f"Error transcoding {input_path}: {e.stderr.decode('utf8')}")
-            return False
         except Exception as e:
-            print(f"Error transcoding {input_path}: {e}")
+            print(f"Error creating proxy for {input_path}: {e}")
             return False
 
-    def detect_scenes(self, input_path: Path) -> List[Tuple[float, float]]:
-        """
-        Detects scenes in the video file using PySceneDetect.
-        Returns a list of (start_time, end_time) tuples in seconds.
-        """
-        try:
-            # ContentDetector finds areas where the difference between two subsequent
-            # frames exceeds the threshold value.
-            scene_list = detect(str(input_path), ContentDetector())
-
-            # Convert FrameTimecode to seconds (float)
-            scenes = []
-            for scene in scene_list:
-                start_time = scene[0].get_seconds()
-                end_time = scene[1].get_seconds()
-                scenes.append((start_time, end_time))
-
-            return scenes
-        except Exception as e:
-            print(f"Error detecting scenes in {input_path}: {e}")
-            # Return empty list to indicate failure or no scenes found (fallback to full video)
-            return []
-
-    def transcode_segment(self, input_path: Path, output_path: Path, start: float, end: float):
-        """
-        Transcodes a specific segment of the VOB file to MP4.
-        """
+    def transcode_segment(self, input_path: Path, output_path: Path, start: float, end: float, metadata: Optional[Dict[str, str]] = None) -> bool:
         audio_settings = self.get_audio_settings(input_path)
 
+        # Duration
+        duration = end - start
+
+        # Base output arguments
+        output_kwargs = {
+            'vcodec': 'libx265',
+            'crf': 18,
+            'preset': 'slower',
+            'vf': 'bwdif=mode=1,format=yuv420p10le',
+            'pix_fmt': 'yuv420p10le',
+            'movflags': '+faststart',
+            **audio_settings
+        }
+
         try:
-            # Calculate duration
-            duration = end - start
+            stream = ffmpeg.input(str(input_path), ss=start, t=duration)
+            output_node = stream.output(str(output_path), **output_kwargs)
 
-            # Note: putting -ss before -i is faster but might not be frame accurate unless we use -noaccurate_seek which we probably don't want.
-            # However, since we are re-encoding, -ss before -i seeks to the nearest keyframe and then decodes until the timestamp.
-            # But since we are doing frame-accurate cutting (based on scene detection), we probably want accuracy.
-            # PySceneDetect returns precise timestamps.
-            # Using -ss after -i is slow (decodes everything up to that point).
-            # Using -ss before -i is fast.
-            # If we use -ss before -i, the timestamps in filters start at 0.
+            # Compile command to inject metadata args manually (to handle multiple -metadata flags)
+            cmd_args = ffmpeg.compile(output_node, overwrite_output=True)
 
-            (
-                ffmpeg
-                .input(str(input_path), ss=start, t=duration)
-                .output(
-                    str(output_path),
-                    vcodec='libx265',
-                    crf=18,
-                    preset='slower',
-                    vf='bwdif=mode=1,format=yuv420p10le',
-                    pix_fmt='yuv420p10le',
-                    movflags='+faststart',
-                    **audio_settings
-                )
-                .overwrite_output()
-                .run(quiet=True)
-            )
+            # Identify where to insert metadata (before the output filename)
+            # The output filename is usually the last argument in cmd_args generated by ffmpeg-python
+            output_file_str = str(output_path)
+
+            # We construct metadata args
+            metadata_args = []
+            if metadata:
+                if 'title' in metadata:
+                    metadata_args.extend(['-metadata', f"title={metadata['title']}"])
+                if 'description' in metadata:
+                    metadata_args.extend(['-metadata', f"comment={metadata['description']}"]) # comment is often used for description
+                    metadata_args.extend(['-metadata', f"description={metadata['description']}"])
+                if 'year' in metadata:
+                    metadata_args.extend(['-metadata', f"date={metadata['year']}"])
+                    metadata_args.extend(['-metadata', f"year={metadata['year']}"])
+                if 'location' in metadata:
+                    metadata_args.extend(['-metadata', f"location={metadata['location']}"])
+
+            # Insert metadata args before the output filename
+            # Note: cmd_args looks like ['ffmpeg', '-i', ..., 'output.mp4']
+            if output_file_str in cmd_args:
+                idx = cmd_args.index(output_file_str)
+                # Insert before filename
+                cmd_args[idx:idx] = metadata_args
+            else:
+                # Fallback if filename match fails (unlikely)
+                cmd_args.extend(metadata_args)
+
+            # Execute
+            subprocess.run(cmd_args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             return True
-        except ffmpeg.Error as e:
-            print(f"Error transcoding segment {input_path} ({start}-{end}): {e.stderr.decode('utf8')}")
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error transcoding segment {input_path} ({start}-{end}): {e.stderr.decode('utf8') if e.stderr else str(e)}")
             return False
         except Exception as e:
             print(f"Error transcoding segment {input_path}: {e}")

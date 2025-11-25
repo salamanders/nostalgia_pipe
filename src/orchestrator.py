@@ -1,12 +1,14 @@
 import os
-import ffmpeg
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import Progress
+
 from .scanner import Scanner
 from .visionary import Visionary
 from .transcoder import Transcoder
+from .job_manager import JobManager
 
 console = Console()
 
@@ -25,112 +27,169 @@ class Orchestrator:
         self.visionary = Visionary(self.api_key)
         self.transcoder = Transcoder()
 
+        # Initialize Job Manager
+        self.job_manager = JobManager(os.path.join(self.output_path, "jobs.json"))
+
+        # Ensure output directory exists
         Path(self.output_path).mkdir(parents=True, exist_ok=True)
+        # Directory for proxies
+        self.proxy_dir = Path(self.output_path) / "proxies"
+        self.proxy_dir.mkdir(exist_ok=True)
 
-    def run(self):
-        console.print("[bold green]Starting NostalgiaPipe...[/bold green]")
-
-        # Stage A: Scanner
+    def scan_and_register(self):
+        """Scans for new files and registers them in the job manager."""
         console.print("[cyan]Scanning for VOB files...[/cyan]")
         vob_files = self.scanner.scan()
         console.print(f"Found {len(vob_files)} valid VOB files.")
 
+        for vob in vob_files:
+            self.job_manager.add_job(str(vob["path"]), vob["context"])
+
+    def batch_submit(self):
+        """Pass 1: Create proxies, upload to Gemini, and Analyze."""
+        self.scan_and_register()
+
+        # 1. Create Proxies
+        pending_proxies = self.job_manager.get_pending_proxies()
+        if pending_proxies:
+            console.print(f"[bold yellow]Creating proxies for {len(pending_proxies)} files...[/bold yellow]")
+            with Progress() as progress:
+                task = progress.add_task("Creating Proxies...", total=len(pending_proxies))
+                for job in pending_proxies:
+                    original_path = Path(job["original_path"])
+                    proxy_filename = f"{original_path.stem}_proxy.mp4"
+                    proxy_path = self.proxy_dir / proxy_filename
+
+                    if self.transcoder.create_proxy(original_path, proxy_path):
+                        self.job_manager.update_job_status(
+                            job["original_path"],
+                            "proxy_created",
+                            proxy_path=str(proxy_path)
+                        )
+                    progress.advance(task)
+
+        # 2. Upload and Analyze
+        pending_uploads = self.job_manager.get_pending_uploads() # status=proxy_created
+
+        # Process pending uploads
+        if pending_uploads:
+            console.print(f"[bold yellow]Uploading {len(pending_uploads)} files...[/bold yellow]")
+            for job in pending_uploads:
+                proxy_path = Path(job["proxy_path"])
+                console.print(f"Uploading [blue]{proxy_path.name}[/blue]...")
+                video_file = self.visionary.upload_video(proxy_path)
+                if video_file:
+                    self.job_manager.update_job_status(
+                        job["original_path"],
+                        "uploaded",
+                        gemini_file_uri=video_file.uri,
+                        gemini_file_name=video_file.name # Store name for retrieval
+                    )
+
+        # Refetch pending analysis (some might have just been added)
+        pending_analysis = self.job_manager.get_pending_analysis()
+
+        if pending_analysis:
+            console.print(f"[bold yellow]Analyzing {len(pending_analysis)} files...[/bold yellow]")
+            for job in pending_analysis:
+                console.print(f"Analyzing [blue]{job['original_path']}[/blue]...")
+
+                # We need the file object
+                file_name = job.get("gemini_file_name")
+                if not file_name:
+                    console.print("[red]Missing gemini_file_name, re-uploading required (not implemented).[/red]")
+                    continue
+
+                try:
+                    video_file = self.visionary.get_file(file_name)
+
+                    result = self.visionary.analyze_video(video_file)
+                    if result:
+                        self.job_manager.update_job_status(
+                            job["original_path"],
+                            "analyzed",
+                            analysis_result=result
+                        )
+                        console.print("[green]Analysis complete.[/green]")
+                    else:
+                        console.print("[red]Analysis failed.[/red]")
+                except Exception as e:
+                     console.print(f"[red]Error during analysis: {e}[/red]")
+
+    def batch_finalize(self):
+        """Pass 2: Transcode final clips based on Gemini analysis."""
+        ready_jobs = self.job_manager.get_ready_to_finalize()
+        if not ready_jobs:
+            console.print("[yellow]No jobs ready to finalize. Run 'submit' first?[/yellow]")
+            return
+
+        console.print(f"[bold green]Finalizing {len(ready_jobs)} jobs...[/bold green]")
+
         with Progress() as progress:
-            task = progress.add_task("[green]Processing...", total=len(vob_files))
+            task = progress.add_task("Transcoding Scenes...", total=len(ready_jobs))
 
-            for vob in vob_files:
-                input_file = vob["path"]
-                context = vob["context"]
-                original_filename = vob["filename"] # e.g. VTS_01_1.VOB
+            for job in ready_jobs:
+                original_path = Path(job["original_path"])
+                analysis = job["analysis_result"]
+                context = job["context"]
 
-                # Extract Chapter Number from filename if possible
-                parts = input_file.stem.split('_')
-                chapter_str = "ChXX"
-                if len(parts) >= 3 and parts[0] == "VTS":
-                    try:
-                        title_set = parts[1]
-                        title_num = parts[2]
-                        chapter_str = f"Ch{title_set}-{title_num}"
-                    except:
-                        pass
+                if not analysis or "scenes" not in analysis:
+                    console.print(f"[red]Invalid analysis for {original_path.name}[/red]")
+                    progress.advance(task)
+                    continue
 
-                progress.update(task, description=f"Analyzing scenes in {context} - {original_filename}")
+                global_year = analysis.get("global_year")
+                global_location = analysis.get("global_location")
 
-                # Scene Detection
-                scenes = self.transcoder.detect_scenes(input_file)
-                if not scenes:
-                    # Fallback to whole file if no scenes detected or error
-                    # Assuming detection might fail or return empty list if only one scene
-                    try:
-                        probe = ffmpeg.probe(str(input_file))
-                        video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
-                        duration = float(video_info['duration'])
-                        scenes = [(0.0, duration)]
-                    except:
-                        console.print(f"[bold red]Could not probe file {input_file}, skipping.[/bold red]")
-                        progress.advance(task)
-                        continue
+                scenes = analysis.get("scenes", [])
+                console.print(f"  Found {len(scenes)} scenes in {original_path.name}")
 
-                for i, (start, end) in enumerate(scenes):
-                    scene_idx = i + 1
-                    duration = end - start
-                    if duration < 1.0: # Skip very short scenes
-                        continue
+                scene_idx = 1
+                for scene in scenes:
+                    start = scene.get("start_time", 0)
+                    end = scene.get("end_time", 0)
+                    title = scene.get("title", "Unknown Scene")
+                    desc = scene.get("description", "")
+                    year = scene.get("year") or global_year or "Unknown Year"
+                    location = scene.get("location") or global_location or "Unknown Location"
 
-                    # Stage B: Visionary (Thumbnails & Naming)
-                    description = ""
-                    if self.api_key:
-                        # Extract multiple thumbnails
-                        # 3 thumbnails: 20%, 50%, 80%
-                        ts_list = [start + duration * 0.2, start + duration * 0.5, start + duration * 0.8]
-                        img_paths = []
-                        for j, ts in enumerate(ts_list):
-                            p = Path(self.output_path) / f"temp_frame_{scene_idx}_{j}.jpg"
-                            img_paths.append(p)
+                    if end - start < 1.0:
+                        continue # Skip tiny scenes
 
-                        if self.visionary.extract_frames(input_file, ts_list, img_paths):
-                            desc = self.visionary.get_description(img_paths)
-                            description = "".join([c for c in desc if c.isalnum() or c in " -_"]).strip()
-                            # Clean up temp images
-                            for p in img_paths:
-                                if p.exists():
-                                    p.unlink()
+                    # Filename: {Year} {Title}.mp4 (handle collisions)
+                    safe_title = "".join([c for c in title if c.isalnum() or c in " -_"]).strip()
+                    safe_year = "".join([c for c in str(year) if c.isdigit()])
+                    if not safe_year: safe_year = "0000"
 
-                    # If AI unavailable or failed, use generic name
-                    if not description:
-                         # If AI is not available, skip naming as per instructions
-                         # "If the AI part isn't available, it should directly convert the VOB to video files and skip the AI naming."
-                         # So we name it generically.
-                         # Note: We shouldn't use "Scene X" as description if we want to strictly follow "Scene X" as unique identifier logic below.
-                         # But if we put it here, it will be "Scene 001 - Scene 1.mp4" if we aren't careful.
-                         # Let's make description empty if it's just generic?
-                         # No, we need a name.
-                         description = f"Scene {scene_idx}"
+                    # Ensure unique filename
+                    base_filename = f"{safe_year} - {safe_title}"
+                    output_filename = f"{base_filename}.mp4"
+                    output_file = Path(self.output_path) / output_filename
 
-                    # Construct new filename with unique scene index to prevent overwrites
-                    # Format: {context} - {chapter_str} - Scene {scene_idx:03d} - {description}.mp4
-                    # If description is "Scene X", we might want to avoid redundancy, but safety first.
-                    # If description is "Scene 1", filename becomes "... - Scene 001 - Scene 1.mp4". A bit redundant but safe.
-                    # Better: if description is "Scene {scene_idx}", we can just use that.
+                    counter = 1
+                    while output_file.exists():
+                        output_filename = f"{base_filename} ({counter}).mp4"
+                        output_file = Path(self.output_path) / output_filename
+                        counter += 1
 
-                    if description == f"Scene {scene_idx}":
-                         new_filename = f"{context} - {chapter_str} - Scene {scene_idx:03d}.mp4"
-                    else:
-                         new_filename = f"{context} - {chapter_str} - Scene {scene_idx:03d} - {description}.mp4"
+                    # Metadata dict
+                    metadata = {
+                        "title": title,
+                        "description": desc,
+                        "year": str(year),
+                        "location": location,
+                        "people": ", ".join(scene.get("people", []))
+                    }
 
-                    output_file = Path(self.output_path) / new_filename
+                    # Sidecar JSON
+                    sidecar_path = output_file.with_suffix('.json')
+                    with open(sidecar_path, 'w') as f:
+                        json.dump(metadata, f, indent=2)
 
-                    # Stage C: Transcode Segment
-                    progress.update(task, description=f"Transcoding {new_filename}")
-                    if self.transcoder.transcode_segment(input_file, output_file, start, end):
-                        console.print(f"[bold blue]Completed:[/bold blue] {new_filename}")
-                    else:
-                        console.print(f"[bold red]Failed:[/bold red] {new_filename}")
+                    # Transcode
+                    progress.console.print(f"    Transcoding: {output_filename}")
+                    self.transcoder.transcode_segment(original_path, output_file, start, end, metadata)
+                    scene_idx += 1
 
+                self.job_manager.update_job_status(job["original_path"], "complete")
                 progress.advance(task)
-
-        console.print("[bold green]All Done![/bold green]")
-
-if __name__ == "__main__":
-    app = Orchestrator()
-    app.run()

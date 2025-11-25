@@ -1,96 +1,99 @@
-import ffmpeg
 import google.generativeai as genai
 from pathlib import Path
-import os
 import time
-from typing import List, Union
+import json
+from typing import Dict, Any, Optional
 
 class Visionary:
     def __init__(self, api_key: str):
         self.api_key = api_key
         if api_key:
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            # Use 1.5 Flash for efficiency and large context
+            self.model = genai.GenerativeModel(
+                model_name='gemini-1.5-flash',
+                generation_config={"response_mime_type": "application/json"}
+            )
         else:
             self.model = None
 
-    def extract_frame(self, video_path: Path, output_image_path: Path):
+    def upload_video(self, video_path: Path):
         """
-        Extracts a frame from 50% of the video duration.
-        """
-        try:
-            # Get video duration
-            probe = ffmpeg.probe(str(video_path))
-            video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
-            duration = float(video_info['duration'])
-
-            timestamp = duration / 2
-
-            (
-                ffmpeg
-                .input(str(video_path), ss=timestamp)
-                .filter('scale', -1, 720) # reasonable resolution
-                .output(str(output_image_path), vframes=1)
-                .overwrite_output()
-                .run(quiet=True)
-            )
-            return True
-        except Exception as e:
-            print(f"Error extracting frame from {video_path}: {e}")
-            return False
-
-    def extract_frames(self, video_path: Path, timestamps: List[float], output_paths: List[Path]):
-        """
-        Extracts frames at specified timestamps.
-        """
-        success = True
-        for ts, out_path in zip(timestamps, output_paths):
-            try:
-                (
-                    ffmpeg
-                    .input(str(video_path), ss=ts)
-                    .filter('scale', -1, 720)
-                    .output(str(out_path), vframes=1)
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
-            except Exception as e:
-                print(f"Error extracting frame at {ts} from {video_path}: {e}")
-                success = False
-        return success
-
-    def get_description(self, image_input: Union[Path, List[Path]]) -> str:
-        """
-        Sends the image(s) to Gemini API to get a description.
+        Uploads video to Gemini File API and waits for it to be ready.
+        Returns the file object or None if failed.
         """
         if not self.model:
-            # Mock response if no API key
-            return "Unidentified Event"
+            print("No API key provided.")
+            return None
 
         try:
-            content = []
-            images_to_delete = []
+            print(f"Uploading {video_path.name} to Gemini...")
+            video_file = genai.upload_file(path=video_path)
 
-            if isinstance(image_input, list):
-                for img_path in image_input:
-                    myfile = genai.upload_file(img_path)
-                    content.append(myfile)
-                    # We shouldn't delete them here immediately because the API call needs them,
-                    # but typically upload_file returns a handle that is valid.
-            else:
-                myfile = genai.upload_file(image_input)
-                content.append(myfile)
+            # Wait for processing to complete
+            while video_file.state.name == "PROCESSING":
+                time.sleep(5)
+                video_file = genai.get_file(video_file.name)
 
-            prompt = (
-                "Analyze these images from a scene in a home movie. Provide a succinct, 3-5 word filename description "
-                "of the event or action (e.g., 'Kids Opening Presents', 'Grandma Blowing Candles', 'Beach Volleyball'). "
-                "Do not include file extensions."
-            )
+            if video_file.state.name == "FAILED":
+                print(f"Video processing failed for {video_path.name}")
+                return None
 
-            content.append(prompt)
+            print(f"Upload complete: {video_file.uri}")
+            return video_file
 
-            result = self.model.generate_content(content)
-            return result.text.strip()
         except Exception as e:
-            print(f"Error getting description from Gemini: {e}")
-            return "Unknown Event"
+            print(f"Error uploading video {video_path}: {e}")
+            return None
+
+    def get_file(self, file_name: str):
+        """Retrieves a file object from Gemini by name."""
+        try:
+            return genai.get_file(file_name)
+        except Exception as e:
+            print(f"Error retrieving file {file_name}: {e}")
+            return None
+
+    def analyze_video(self, video_file) -> Dict[str, Any]:
+        """
+        Sends the uploaded video file to Gemini for scene analysis.
+        Expects a JSON response.
+        """
+        if not self.model: return {}
+
+        prompt = """
+        Analyze this home movie video carefully.
+        1. Identify the creation date/year from the content (clothing, technology, overlaid text) or context.
+        2. Identify the general location (e.g. "Paris", "Backyard", "Disneyland").
+        3. Split the video into distinct scenes based on events, activities, or significant visual changes.
+           - Ensure scenes cover the entire duration if possible, or skip static/empty parts.
+           - 'start_time' and 'end_time' must be in seconds (float).
+
+        Return a JSON object with this exact structure:
+        {
+          "global_year": "YYYY or null",
+          "global_location": "Location or null",
+          "scenes": [
+            {
+              "start_time": 0.0,
+              "end_time": 10.5,
+              "title": "Short Descriptive Title",
+              "description": "Detailed description of the event, action, and context.",
+              "people": ["Person description or name if known"],
+              "year": "YYYY (override global if specific)",
+              "location": "Location (override global if specific)"
+            }
+          ]
+        }
+        """
+
+        try:
+            print(f"Analyzing {video_file.display_name}...")
+            response = self.model.generate_content(
+                [video_file, prompt],
+                request_options={"timeout": 600} # 10 minute timeout
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Error calling Gemini for analysis: {e}")
+            return {}
