@@ -1,20 +1,45 @@
 import ffmpeg
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from scenedetect import detect, ContentDetector
 
 class Transcoder:
+    def get_audio_settings(self, input_path: Path) -> Dict[str, Any]:
+        """
+        Determines audio settings based on the input file's audio codec.
+        If the audio is AC3, we copy it. Otherwise, we re-encode to AAC.
+        """
+        try:
+            probe = ffmpeg.probe(str(input_path))
+            audio_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)
+
+            if audio_stream and audio_stream['codec_name'] == 'ac3':
+                return {'acodec': 'copy'}
+            else:
+                return {'acodec': 'aac', 'audio_bitrate': '256k'}
+        except Exception as e:
+            print(f"Error probing audio for {input_path}: {e}")
+            # Fallback to safe AAC encoding
+            return {'acodec': 'aac', 'audio_bitrate': '256k'}
+
     def transcode(self, input_path: Path, output_path: Path):
         """
         Transcodes the VOB file to MP4 using specific archival settings.
         """
-        # Flags:
-        # -c:v libx264
-        # -crf 17
-        # -preset veryslow
-        # -vf bwdif=mode=0:parity=-1
-        # -pix_fmt yuv420p
-        # -c:a aac -b:a 256k
+        # Breakdown of the flags:
+        # bwdif=mode=1: This is the magic switch.
+        #   mode=0: Same framerate (30fps). Avoid.
+        #   mode=1: Double framerate (60fps). Use this. It outputs one frame for every field.
+        # format=yuv420p10le: This ensures the processing pipeline happens in 10-bit.
+        #   Even though your DVD source is 8-bit, deinterlacing involves interpolation (creating new pixels).
+        #   Doing this math in 10-bit prevents "banding" in the blue gradients of the sky.
+        # -c:a copy: (If AC3) This passes the audio through untouched.
+        #   DVD audio is usually AC3 or PCM, which Google Photos handles fine.
+        #   Re-compressing it to AAC would only lose quality.
+        # -movflags +faststart: Moves the metadata to the front of the file.
+        #   This allows the video to start playing immediately on Google Photos/Web browsers before the whole file is downloaded.
+
+        audio_settings = self.get_audio_settings(input_path)
 
         try:
             (
@@ -22,13 +47,13 @@ class Transcoder:
                 .input(str(input_path))
                 .output(
                     str(output_path),
-                    vcodec='libx264',
-                    crf=17,
-                    preset='veryslow',
-                    vf='bwdif=mode=0:parity=-1',
-                    pix_fmt='yuv420p',
-                    acodec='aac',
-                    audio_bitrate='256k'
+                    vcodec='libx265',
+                    crf=18,
+                    preset='slower',
+                    vf='bwdif=mode=1,format=yuv420p10le',
+                    pix_fmt='yuv420p10le',
+                    movflags='+faststart',
+                    **audio_settings
                 )
                 .overwrite_output()
                 .run(quiet=True)
@@ -68,6 +93,8 @@ class Transcoder:
         """
         Transcodes a specific segment of the VOB file to MP4.
         """
+        audio_settings = self.get_audio_settings(input_path)
+
         try:
             # Calculate duration
             duration = end - start
@@ -85,13 +112,13 @@ class Transcoder:
                 .input(str(input_path), ss=start, t=duration)
                 .output(
                     str(output_path),
-                    vcodec='libx264',
-                    crf=17,
-                    preset='veryslow',
-                    vf='bwdif=mode=0:parity=-1',
-                    pix_fmt='yuv420p',
-                    acodec='aac',
-                    audio_bitrate='256k'
+                    vcodec='libx265',
+                    crf=18,
+                    preset='slower',
+                    vf='bwdif=mode=1,format=yuv420p10le',
+                    pix_fmt='yuv420p10le',
+                    movflags='+faststart',
+                    **audio_settings
                 )
                 .overwrite_output()
                 .run(quiet=True)
