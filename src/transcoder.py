@@ -130,3 +130,51 @@ class Transcoder:
         except Exception as e:
             print(f"Error transcoding segment {input_path}: {e}")
             return False
+
+    def create_vfr_proxy(self, input_path: Path, output_path: Path, timestamps: List[float]) -> bool:
+        """
+        Creates a low-resolution, variable-frame-rate (VFR) proxy video.
+        It includes the full original audio track but only the video frames
+        at the specified timestamps.
+        """
+        if not timestamps:
+            return False
+
+        try:
+            # Construct the select filter string. E.g., 'select=eq(n,10)+eq(n,25)+eq(n,50)'
+            # This is complex because timestamps need to be converted to frame numbers.
+            # A simpler way is to use a timestamp-based selection.
+            # E.g., 'select='gt(t,10)*lt(t,11)+gt(t,20)*lt(t,21)''
+            # Let's build the select filter string based on timestamps.
+            select_filter = "+".join([f"between(t,{ts},{ts}+0.001)" for ts in timestamps])
+
+            audio_stream = ffmpeg.input(str(input_path)).audio
+            video_stream = (
+                ffmpeg.input(str(input_path))
+                .video.filter('select', select_filter)
+                .filter('setpts', 'N/FRAME_RATE/TB')
+                .filter('scale', -1, 360) # 360p proxy
+            )
+
+            (
+                ffmpeg.output(
+                    video_stream,
+                    audio_stream,
+                    str(output_path),
+                    vcodec='libx264',
+                    crf=28,
+                    preset='fast',
+                    acodec='aac',
+                    audio_bitrate='64k',
+                    movflags='+faststart'
+                )
+                .overwrite_output()
+                .run(quiet=True)
+            )
+            return True
+        except ffmpeg.Error as e:
+            print(f"Error creating VFR proxy for {input_path}: {e.stderr.decode('utf8')}")
+            return False
+        except Exception as e:
+            print(f"Error creating VFR proxy for {input_path}: {e}")
+            return False
