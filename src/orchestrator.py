@@ -7,6 +7,7 @@ from rich.progress import Progress
 from .scanner import Scanner
 from .visionary import Visionary
 from .transcoder import Transcoder
+from .nostalgia_filter import NostalgiaFilter
 
 console = Console()
 
@@ -24,6 +25,7 @@ class Orchestrator:
         self.scanner = Scanner(self.input_path)
         self.visionary = Visionary(self.api_key)
         self.transcoder = Transcoder()
+        self.nostalgia_filter = NostalgiaFilter()
 
         Path(self.output_path).mkdir(parents=True, exist_ok=True)
 
@@ -80,21 +82,16 @@ class Orchestrator:
                     # Stage B: Visionary (Thumbnails & Naming)
                     description = ""
                     if self.api_key:
-                        # Extract multiple thumbnails
-                        # 3 thumbnails: 20%, 50%, 80%
-                        ts_list = [start + duration * 0.2, start + duration * 0.5, start + duration * 0.8]
-                        img_paths = []
-                        for j, ts in enumerate(ts_list):
-                            p = Path(self.output_path) / f"temp_frame_{scene_idx}_{j}.jpg"
-                            img_paths.append(p)
+                        # Select best frames using NostalgiaFilter
+                        ts_list = self.nostalgia_filter.select_best_frames(str(input_file), start, end)
 
-                        if self.visionary.extract_frames(input_file, ts_list, img_paths):
-                            desc = self.visionary.get_description(img_paths)
-                            description = "".join([c for c in desc if c.isalnum() or c in " -_"]).strip()
-                            # Clean up temp images
-                            for p in img_paths:
-                                if p.exists():
-                                    p.unlink()
+                        if ts_list:
+                            proxy_path = Path(self.output_path) / f"temp_proxy_{scene_idx}.mp4"
+                            if self.transcoder.create_vfr_proxy(input_file, proxy_path, ts_list):
+                                desc = self.visionary.get_description(proxy_path)
+                                description = "".join([c for c in desc if c.isalnum() or c in " -_"]).strip()
+                                if proxy_path.exists():
+                                    proxy_path.unlink()
 
                     # If AI unavailable or failed, use generic name
                     if not description:
