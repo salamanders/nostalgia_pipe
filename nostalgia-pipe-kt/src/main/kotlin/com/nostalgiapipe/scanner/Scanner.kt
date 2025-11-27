@@ -8,33 +8,34 @@ import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flowOn
 import java.nio.file.Path
-import kotlin.io.path.isDirectory
 import kotlin.io.path.fileSize
 import kotlin.io.path.isRegularFile
-import kotlin.io.path.name
+import kotlin.io.path.extension
 import kotlin.io.path.walk
 
 object Scanner {
+    private val VALID_EXTENSIONS = setOf("vob", "mp4", "mov", "mkv", "avi")
+
     /**
-     * Scans the given input path for VIDEO_TS directories that are not empty.
+     * Scans the given input path for valid video files.
+     * Supported formats: VOB, MP4, MOV, MKV, AVI
      *
      * @param inputPath The root directory to start the scan from.
-     * @return A Flow that emits the Path of each valid VIDEO_TS directory found.
+     * @return A Flow that emits the Path of each valid video file found.
      */
-    fun findVideoTsDirectories(inputPath: Path): Flow<Path> {
+    fun findVideoFiles(inputPath: Path): Flow<Path> {
         return inputPath.walk()
             .asFlow()
-            .filter { it.isDirectory() && it.name.equals("VIDEO_TS", ignoreCase = true) }
-            .filter { containsVideoFiles(it) }
-            .flowOn(Dispatchers.IO) // Perform file operations on the IO dispatcher
+            .filter { isValidVideoFile(it) }
+            .flowOn(Dispatchers.IO)
     }
 
     /**
-     * Checks if a directory contains at least one file larger than 1KB.
-     * This is to avoid processing empty or artifact VIDEO_TS folders.
+     * Checks if a file is a valid video file (extension match and size > 1KB).
      */
-    private fun containsVideoFiles(directory: Path): Boolean {
-        // Reverting to walk() as it's more robust for this check.
-        return directory.walk().any { it.isRegularFile() && it.fileSize() > 1024 }
+    private fun isValidVideoFile(file: Path): Boolean {
+        return file.isRegularFile() &&
+               VALID_EXTENSIONS.contains(file.extension.lowercase()) &&
+               file.fileSize() > 1024
     }
 }

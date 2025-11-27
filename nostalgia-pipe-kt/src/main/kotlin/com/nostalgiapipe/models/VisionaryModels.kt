@@ -8,7 +8,7 @@ data class Scene(
     val end: String,
     val title: String,
     val description: String,
-    val year: Int,
+    val year: String, // Changed to String to accommodate "2023" or similar from AI
     val location: String,
     val people: List<String>
 )

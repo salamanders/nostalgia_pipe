@@ -8,6 +8,7 @@ import org.opencv.imgcodecs.Imgcodecs
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.pathString
+import kotlin.io.path.extension
 
 object Transcoder {
 
@@ -20,7 +21,7 @@ object Transcoder {
             frame.image.release() // Release the mat to free memory
         }
 
-        val proxyVideoPath = outputPath.resolve("proxy.mp4")
+        val proxyVideoPath = outputPath.resolve("proxy_${audioPath.fileName}.mp4")
 
         val command = arrayOf(
             "ffmpeg",
@@ -44,32 +45,50 @@ object Transcoder {
         return@withContext proxyVideoPath
     }
 
-    suspend fun createFinalVideo(videoTsPath: Path, metadata: VideoMetadata, outputPath: Path): Path? = withContext(Dispatchers.IO) {
+    suspend fun createFinalVideo(inputPath: Path, metadata: VideoMetadata, outputPath: Path): Path? = withContext(Dispatchers.IO) {
         val mainTitle = metadata.scenes.firstOrNull()?.title ?: "Untitled Event"
         val year = metadata.scenes.firstOrNull()?.year ?: "UnknownYear"
         val finalFileName = "$year - $mainTitle.mp4".replace(Regex("[^a-zA-Z0-9.-]"), "_")
         val finalOutputPath = outputPath.resolve(finalFileName)
 
-        // Concatenate all VOB files for transcoding
-        val vobFiles = videoTsPath.toFile().walk()
-            .filter { it.isFile && it.extension.equals("VOB", ignoreCase = true) }
-            .sorted()
-            .joinToString("|") { it.absolutePath }
+        val command = if (inputPath.toFile().isDirectory) {
+            // Concatenate all VOB files for transcoding (Legacy VOB support)
+            val vobFiles = inputPath.toFile().walk()
+                .filter { it.isFile && it.extension.equals("VOB", ignoreCase = true) }
+                .sorted()
+                .joinToString("|") { it.absolutePath }
 
-        val command = arrayOf(
-            "ffmpeg",
-            "-y",
-            "-i", "concat:$vobFiles",
-            "-c:v", "libx265",
-            "-crf", "18",
-            "-preset", "slower",
-            "-pix_fmt", "yuv420p10le", // 10-bit color
-            "-vf", "bwdif=mode=1", // Deinterlace to 60fps
-            "-c:a", "aac",
-            "-b:a", "256k",
-            "-movflags", "+faststart",
-            finalOutputPath.pathString
-        )
+             arrayOf(
+                "ffmpeg",
+                "-y",
+                "-i", "concat:$vobFiles",
+                "-c:v", "libx265",
+                "-crf", "18",
+                "-preset", "slower",
+                "-pix_fmt", "yuv420p10le", // 10-bit color
+                "-vf", "bwdif=mode=1", // Deinterlace to 60fps
+                "-c:a", "aac",
+                "-b:a", "256k",
+                "-movflags", "+faststart",
+                finalOutputPath.pathString
+            )
+        } else {
+             // Single file input
+             arrayOf(
+                "ffmpeg",
+                "-y",
+                "-i", inputPath.pathString,
+                "-c:v", "libx265",
+                "-crf", "18",
+                "-preset", "slower",
+                "-pix_fmt", "yuv420p10le", // 10-bit color
+                "-vf", "bwdif=mode=1", // Deinterlace to 60fps
+                "-c:a", "aac",
+                "-b:a", "256k",
+                "-movflags", "+faststart",
+                finalOutputPath.pathString
+            )
+        }
 
         runFfmpegCommand(command, "final video transcoding")
 
