@@ -10,12 +10,12 @@ import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import java.nio.file.Path
 
-class Visionary(apiKey: String) {
+open class Visionary(apiKey: String) {
 
     private val client = Client.builder().apiKey(apiKey).build()
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun analyzeVideo(proxyVideoPath: Path): VideoMetadata? {
+    open suspend fun analyzeVideo(proxyVideoPath: Path): VideoMetadata? {
         val prompt = """
             Analyze this video of a home movie and provide a structured JSON output. The video contains a series of keyframes from a single event. Your task is to identify the main event, break it down into distinct scenes, and provide the following details for each scene:
 

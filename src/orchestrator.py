@@ -12,7 +12,7 @@ from .nostalgia_filter import NostalgiaFilter
 console = Console()
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, visionary=None):
         load_dotenv()
         self.input_path = os.getenv("INPUT_PATH")
         self.output_path = os.getenv("OUTPUT_PATH")
@@ -23,7 +23,8 @@ class Orchestrator:
             exit(1)
 
         self.scanner = Scanner(self.input_path)
-        self.visionary = Visionary(self.api_key)
+        # Use injected visionary or create a new one
+        self.visionary = visionary if visionary else Visionary(self.api_key)
         self.transcoder = Transcoder()
         self.nostalgia_filter = NostalgiaFilter()
 
@@ -33,26 +34,26 @@ class Orchestrator:
         console.print("[bold green]Starting NostalgiaPipe...[/bold green]")
 
         # Stage A: Scanner
-        console.print("[cyan]Scanning for VOB files...[/cyan]")
-        vob_files = self.scanner.scan()
-        console.print(f"Found {len(vob_files)} valid VOB files.")
+        console.print("[cyan]Scanning for video files...[/cyan]")
+        video_files = self.scanner.scan()
+        console.print(f"Found {len(video_files)} valid video files.")
 
         with Progress() as progress:
-            task = progress.add_task("[green]Processing...", total=len(vob_files))
+            task = progress.add_task("[green]Processing...", total=len(video_files))
 
-            for vob in vob_files:
-                input_file = vob["path"]
-                context = vob["context"]
-                original_filename = vob["filename"] # e.g. VTS_01_1.VOB
+            for video in video_files:
+                input_file = video["path"]
+                context = video["context"]
+                original_filename = video["filename"]
 
-                # Extract Chapter Number from filename if possible
+                # Extract Chapter Number from filename if possible (VOB legacy logic)
                 parts = input_file.stem.split('_')
-                chapter_str = "ChXX"
-                if len(parts) >= 3 and parts[0] == "VTS":
+                chapter_str = ""
+                if input_file.suffix.lower() == '.vob' and len(parts) >= 3 and parts[0] == "VTS":
                     try:
                         title_set = parts[1]
                         title_num = parts[2]
-                        chapter_str = f"Ch{title_set}-{title_num}"
+                        chapter_str = f"Ch{title_set}-{title_num} - "
                     except:
                         pass
 
@@ -62,7 +63,6 @@ class Orchestrator:
                 scenes = self.transcoder.detect_scenes(input_file)
                 if not scenes:
                     # Fallback to whole file if no scenes detected or error
-                    # Assuming detection might fail or return empty list if only one scene
                     try:
                         probe = ffmpeg.probe(str(input_file))
                         video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
@@ -81,7 +81,8 @@ class Orchestrator:
 
                     # Stage B: Visionary (Thumbnails & Naming)
                     description = ""
-                    if self.api_key:
+                    # Always try to name if visionary is present (even if api_key is missing, maybe it's a mock)
+                    if self.visionary:
                         # Select best frames using NostalgiaFilter
                         ts_list = self.nostalgia_filter.select_best_frames(str(input_file), start, end)
 
@@ -90,30 +91,19 @@ class Orchestrator:
                             if self.transcoder.create_vfr_proxy(input_file, proxy_path, ts_list):
                                 desc = self.visionary.get_description(proxy_path)
                                 description = "".join([c for c in desc if c.isalnum() or c in " -_"]).strip()
-                                if proxy_path.exists():
-                                    proxy_path.unlink()
+                                # Keep proxy for inspection as requested
+                                console.print(f"[dim]Proxy kept at: {proxy_path}[/dim]")
+                                # if proxy_path.exists():
+                                #    proxy_path.unlink()
 
-                    # If AI unavailable or failed, use generic name
                     if not description:
-                         # If AI is not available, skip naming as per instructions
-                         # "If the AI part isn't available, it should directly convert the VOB to video files and skip the AI naming."
-                         # So we name it generically.
-                         # Note: We shouldn't use "Scene X" as description if we want to strictly follow "Scene X" as unique identifier logic below.
-                         # But if we put it here, it will be "Scene 001 - Scene 1.mp4" if we aren't careful.
-                         # Let's make description empty if it's just generic?
-                         # No, we need a name.
                          description = f"Scene {scene_idx}"
 
-                    # Construct new filename with unique scene index to prevent overwrites
-                    # Format: {context} - {chapter_str} - Scene {scene_idx:03d} - {description}.mp4
-                    # If description is "Scene X", we might want to avoid redundancy, but safety first.
-                    # If description is "Scene 1", filename becomes "... - Scene 001 - Scene 1.mp4". A bit redundant but safe.
-                    # Better: if description is "Scene {scene_idx}", we can just use that.
-
+                    # Construct new filename
                     if description == f"Scene {scene_idx}":
-                         new_filename = f"{context} - {chapter_str} - Scene {scene_idx:03d}.mp4"
+                         new_filename = f"{context} - {chapter_str}Scene {scene_idx:03d}.mp4"
                     else:
-                         new_filename = f"{context} - {chapter_str} - Scene {scene_idx:03d} - {description}.mp4"
+                         new_filename = f"{context} - {chapter_str}Scene {scene_idx:03d} - {description}.mp4"
 
                     output_file = Path(self.output_path) / new_filename
 

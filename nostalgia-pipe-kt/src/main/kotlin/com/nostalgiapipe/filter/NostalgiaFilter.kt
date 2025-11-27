@@ -17,8 +17,8 @@ data class Frame(val timestamp: Double, val image: Mat)
 object NostalgiaFilter {
 
     init {
-        // Load the native OpenCV library
-        System.loadLibrary(Core.NATIVE_LIBRARY_NAME)
+        // Load the native OpenCV library using OpenPnP
+        nu.pattern.OpenCV.loadLocally()
     }
 
     private const val LAPLACIAN_VARIANCE_THRESHOLD = 100.0
