@@ -2,6 +2,8 @@ package com.nostalgiapipe.visionary
 
 import com.google.genai.Client
 import com.google.genai.types.Content
+import com.google.genai.types.GenerateContentConfig
+import com.google.genai.types.MediaResolution
 import com.google.genai.types.Part
 import com.google.genai.types.UploadFileConfig
 import com.nostalgiapipe.models.VideoMetadata
@@ -45,8 +47,13 @@ open class Visionary(apiKey: String) {
             val promptPart = Part.fromText(prompt)
             val content = Content.fromParts(promptPart, videoPart)
 
-            // 3. Generate the content
-            val responseFuture = client.async.models.generateContent("gemini-1.5-flash", content, null)
+            // 3. Configure Media Resolution
+            val config = GenerateContentConfig.builder()
+                .mediaResolution("MEDIA_RESOLUTION_LOW")
+                .build()
+
+            // 4. Generate the content
+            val responseFuture = client.async.models.generateContent("gemini-3-pro-preview", content, config)
             val response = responseFuture.await()
 
             val responseText = response.text()
@@ -59,11 +66,16 @@ open class Visionary(apiKey: String) {
             return try {
                 json.decodeFromString<VideoMetadata>(cleanedJson)
             } catch (e: Exception) {
-                println("Error decoding JSON from Visionary API: ${e.message}")
-                null
+                // If clean up failed, try raw text just in case it wasn't wrapped in markdown block
+                try {
+                    json.decodeFromString<VideoMetadata>(responseText.trim())
+                } catch (e2: Exception) {
+                    println("Error decoding JSON from Visionary API: ${e.message}")
+                    null
+                }
             }
         } finally {
-            // 4. Clean up the uploaded file
+            // 5. Clean up the uploaded file
             client.async.files.delete(fileName, null)
         }
     }
