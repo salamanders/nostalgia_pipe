@@ -1,0 +1,10 @@
+# Gradle files
+.gradle/
+build/
+
+# IDE files
+.idea/
+*.iml
+
+# Local env file
+.env

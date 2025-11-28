@@ -5,6 +5,10 @@ from typing import List, Tuple, Dict, Any, Optional
 
 class Transcoder:
     def get_audio_settings(self, input_path: Path) -> Dict[str, Any]:
+        """
+        Determines audio settings based on the input file's audio codec.
+        If the audio is AC3, we copy it. Otherwise, we re-encode to AAC.
+        """
         try:
             probe = ffmpeg.probe(str(input_path))
             audio_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)

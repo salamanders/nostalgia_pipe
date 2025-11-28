@@ -1,6 +1,7 @@
 ffmpeg-python
 rich
-google-generativeai
+google-genai
 python-dotenv
 scenedetect
 opencv-python-headless
+scikit-image

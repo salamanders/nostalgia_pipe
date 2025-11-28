@@ -55,13 +55,15 @@ class TestVisionary(unittest.TestCase):
     @patch('src.visionary.genai')
     def test_analyze_video(self, mock_genai):
         visionary = Visionary("fake_key")
-        mock_model = MagicMock()
-        visionary.model = mock_model
 
-        # Mock response
+        # Mock Client
+        mock_client = MagicMock()
+        visionary.client = mock_client
+
+        # Mock models.generate_content response
         mock_response = MagicMock()
         mock_response.text = '{"scenes": []}'
-        mock_model.generate_content.return_value = mock_response
+        mock_client.models.generate_content.return_value = mock_response
 
         # Mock video file
         mock_video_file = MagicMock()
@@ -70,7 +72,7 @@ class TestVisionary(unittest.TestCase):
         result = visionary.analyze_video(mock_video_file)
         self.assertIsInstance(result, dict)
         self.assertIn("scenes", result)
-        mock_model.generate_content.assert_called()
+        mock_client.models.generate_content.assert_called()
 
 if __name__ == '__main__':
     unittest.main()
