@@ -3,7 +3,6 @@ package com.nostalgiapipe.orchestrator
 import com.github.ajalt.mordant.rendering.TextColors.*
 import com.github.ajalt.mordant.terminal.Terminal
 import com.nostalgiapipe.config.Config
-import com.nostalgiapipe.filter.NostalgiaFilter
 import com.nostalgiapipe.models.VideoMetadata
 import com.nostalgiapipe.scanner.Scanner
 import com.nostalgiapipe.transcoder.Transcoder
@@ -17,6 +16,8 @@ import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.io.path.name
+import kotlin.io.path.createDirectories
+import kotlin.io.path.div
 
 class Orchestrator(
     private val config: Config,
@@ -26,84 +27,182 @@ class Orchestrator(
     private val terminal = Terminal()
     private val json = Json { prettyPrint = true }
 
+    // Job Manager Lite implementation (using jobs.json like python version)
+    private val jobsFile = Path(config.outputPath) / "jobs.json"
+
+    // Simple state tracking
+    private fun loadJobs(): MutableMap<String, MutableMap<String, String>> {
+        if (!jobsFile.exists()) return mutableMapOf()
+        return try {
+            val content = jobsFile.readText()
+            if (content.isBlank()) mutableMapOf()
+            else json.decodeFromString(content)
+        } catch (e: Exception) {
+            mutableMapOf()
+        }
+    }
+
+    private fun saveJobs(jobs: Map<String, MutableMap<String, String>>) {
+        jobsFile.writeText(json.encodeToString(jobs))
+    }
+
     suspend fun submit() {
         terminal.println(green("Starting 'submit' phase..."))
+
+        Path(config.outputPath).createDirectories()
+        val proxyDir = Path(config.outputPath) / "proxies"
+        proxyDir.createDirectories()
+
+        val jobs = loadJobs()
         val videoFiles = Scanner.findVideoFiles(Path(config.inputPath)).toList()
 
-        if (videoFiles.isEmpty()) {
-            terminal.println(yellow("No video files found to process."))
-            return
+        terminal.println("Found ${videoFiles.size} files.")
+
+        // 1. Scan and Register
+        videoFiles.forEach { file ->
+            val pathStr = file.toString()
+            if (!jobs.containsKey(pathStr)) {
+                jobs[pathStr] = mutableMapOf(
+                    "status" to "pending",
+                    "context" to file.parent.name
+                )
+            }
+        }
+        saveJobs(jobs)
+
+        // 2. Create Proxies
+        jobs.filter { it.value["status"] == "pending" }.forEach { (originalPath, job) ->
+            terminal.println("Creating proxy for ${blue(originalPath)}")
+            val inputPath = Path(originalPath)
+            val proxyPath = proxyDir / "${inputPath.fileName}_proxy.mp4"
+
+            if (Transcoder.createProxy(inputPath, proxyPath)) {
+                job["status"] = "proxy_created"
+                job["proxy_path"] = proxyPath.toString()
+                saveJobs(jobs)
+                terminal.println(green("Proxy created."))
+            } else {
+                terminal.println(red("Failed to create proxy."))
+            }
         }
 
-        videoFiles.forEach { videoPath ->
-            val sidecarFile = videoPath.resolveSibling("${videoPath.fileName}.nostalgia_pipe.json")
-            if (sidecarFile.exists()) {
-                terminal.println(cyan("Skipping ${videoPath.fileName}: Already processed (sidecar file exists)."))
-                return@forEach
+        // 3. Upload and Analyze
+        // Pending Uploads
+        jobs.filter { it.value["status"] == "proxy_created" }.forEach { (originalPath, job) ->
+            val proxyPathStr = job["proxy_path"] ?: return@forEach
+            terminal.println("Uploading proxy: $proxyPathStr")
+
+            val uri = visionary.uploadVideo(Path(proxyPathStr))
+            if (uri != null) {
+                job["status"] = "uploaded"
+                job["gemini_uri"] = uri.uri().get()
+                job["gemini_name"] = uri.name().get()
+                saveJobs(jobs)
+                terminal.println(green("Uploaded."))
+            } else {
+                 terminal.println(red("Upload failed."))
             }
+        }
 
-            terminal.println("Processing: ${blue(videoPath.toString())}")
+        // Pending Analysis
+        jobs.filter { it.value["status"] == "uploaded" }.forEach { (originalPath, job) ->
+            val fileName = job["gemini_name"] ?: return@forEach
+            terminal.println("Analyzing $fileName...")
 
-            terminal.println("  - Selecting keyframes...")
-            val keyFrames = NostalgiaFilter.selectKeyFrames(videoPath)
-            if (keyFrames.isEmpty()) {
-                terminal.println(red("  - Error: Could not select any keyframes."))
-                return@forEach
+            val fileObj = visionary.getFile(fileName)
+            if (fileObj != null) {
+                val result = visionary.analyzeVideo(fileObj)
+                if (result != null) {
+                    job["status"] = "analyzed"
+                    job["analysis_result"] = json.encodeToString(result)
+                    saveJobs(jobs)
+                    terminal.println(green("Analysis complete."))
+                } else {
+                    terminal.println(red("Analysis failed."))
+                }
+            } else {
+                 terminal.println(red("Could not retrieve file from Gemini."))
             }
-            terminal.println(green("  - Found ${keyFrames.size} keyframes."))
-
-            terminal.println("  - Creating proxy video...")
-            val proxyVideo = Transcoder.createProxyVideo(keyFrames, videoPath, Path(config.outputPath))
-            if (proxyVideo == null) {
-                terminal.println(red("  - Error: Failed to create proxy video."))
-                return@forEach
-            }
-            terminal.println(green("  - Proxy video created at: $proxyVideo"))
-            // Keep proxy for inspection
-
-            terminal.println("  - Analyzing video with Gemini AI (this may take a moment)...")
-            val metadata = visionary.analyzeVideo(proxyVideo)
-            if (metadata == null) {
-                terminal.println(red("  - Error: Failed to get analysis from Visionary AI."))
-                return@forEach
-            }
-            terminal.println(green("  - AI analysis complete."))
-
-            val metadataJson = json.encodeToString(metadata)
-            sidecarFile.writeText(metadataJson)
-            terminal.println(green("  - Metadata saved to sidecar file: $sidecarFile"))
         }
     }
 
     suspend fun finalize() {
         terminal.println(green("Starting 'finalize' phase..."))
-        val videoFiles = Scanner.findVideoFiles(Path(config.inputPath)).toList()
-            .filter { it.resolveSibling("${it.fileName}.nostalgia_pipe.json").exists() }
+        val jobs = loadJobs()
 
-        if (videoFiles.isEmpty()) {
-            terminal.println(yellow("No projects found ready for finalization."))
+        val readyJobs = jobs.filter { it.value["status"] == "analyzed" }
+
+        if (readyJobs.isEmpty()) {
+            terminal.println(yellow("No jobs ready to finalize."))
             return
         }
 
-        videoFiles.forEach { videoPath ->
-            terminal.println("Finalizing: ${blue(videoPath.toString())}")
-            val sidecarFile = videoPath.resolveSibling("${videoPath.fileName}.nostalgia_pipe.json")
+        readyJobs.forEach { (originalPathStr, job) ->
+            val originalPath = Path(originalPathStr)
+            terminal.println("Finalizing: ${blue(originalPathStr)}")
+
+            val analysisStr = job["analysis_result"]
+            if (analysisStr == null) {
+                terminal.println(red("Missing analysis result."))
+                return@forEach
+            }
 
             try {
-                val metadata = json.decodeFromString<VideoMetadata>(sidecarFile.readText())
+                val metadata = json.decodeFromString<VideoMetadata>(analysisStr)
+                val globalYear = metadata.global_year
+                val globalLocation = metadata.global_location
 
-                terminal.println("  - Transcoding final high-quality video...")
-                val finalVideo = Transcoder.createFinalVideo(videoPath, metadata, Path(config.outputPath))
+                var sceneIdx = 1
+                metadata.scenes.forEach { scene ->
+                    val start = scene.start_time
+                    val end = scene.end_time
 
-                if (finalVideo != null) {
-                    terminal.println(green("  - Successfully created final video: $finalVideo"))
-                    sidecarFile.toFile().delete()
-                    terminal.println(cyan("  - Removed sidecar file."))
-                } else {
-                    terminal.println(red("  - Error: Failed to create final video."))
+                    if (end - start < 1.0) return@forEach
+
+                    val title = scene.title
+                    val year = scene.year ?: globalYear ?: "0000"
+
+                    // Filename sanitization
+                    val safeTitle = title.filter { it.isLetterOrDigit() || it == ' ' || it == '-' }.trim()
+                    val safeYear = year.filter { it.isDigit() }
+
+                    val baseName = "$safeYear - $safeTitle"
+                    var outputName = "$baseName.mp4"
+                    var outputFile = Path(config.outputPath) / outputName
+                    var counter = 1
+                    while (outputFile.exists()) {
+                        outputName = "$baseName ($counter).mp4"
+                        outputFile = Path(config.outputPath) / outputName
+                        counter++
+                    }
+
+                    // Metadata map
+                    val metaMap = mapOf(
+                        "title" to title,
+                        "description" to scene.description,
+                        "year" to year,
+                        "location" to (scene.location ?: globalLocation ?: ""),
+                        "people" to (scene.people?.joinToString(", ") ?: "")
+                    )
+
+                    // Sidecar
+                    val sidecar = outputFile.resolveSibling("$outputName.json")
+                    sidecar.writeText(json.encodeToString(metaMap))
+
+                    terminal.println("  Transcoding: $outputName")
+                    if (Transcoder.transcodeSegment(originalPath, outputFile, start, end, metaMap)) {
+                        terminal.println(green("  Success."))
+                    } else {
+                        terminal.println(red("  Failed."))
+                    }
+                    sceneIdx++
                 }
+
+                job["status"] = "complete"
+                saveJobs(jobs)
+
             } catch (e: Exception) {
-                terminal.println(red("  - Error processing ${videoPath.fileName}: ${e.message}"))
+                terminal.println(red("Error finalizing: ${e.message}"))
             }
         }
     }

@@ -1,120 +1,99 @@
 package com.nostalgiapipe.transcoder
 
-import com.nostalgiapipe.filter.Frame
 import com.nostalgiapipe.models.VideoMetadata
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.opencv.imgcodecs.Imgcodecs
 import java.nio.file.Path
-import kotlin.io.path.createTempDirectory
 import kotlin.io.path.pathString
-import kotlin.io.path.extension
 
 object Transcoder {
 
-    suspend fun createProxyVideo(frames: List<Frame>, audioPath: Path, outputPath: Path): Path? = withContext(Dispatchers.IO) {
-        val tempDir = createTempDirectory("nostalgia-pipe-frames-")
-
-        frames.forEachIndexed { index, frame ->
-            val frameFile = tempDir.resolve("frame-%04d.png".format(index))
-            Imgcodecs.imwrite(frameFile.pathString, frame.image)
-            frame.image.release() // Release the mat to free memory
-        }
-
-        val proxyVideoPath = outputPath.resolve("proxy_${audioPath.fileName}.mp4")
-
+    suspend fun createProxy(inputPath: Path, outputPath: Path): Boolean = withContext(Dispatchers.IO) {
         val command = arrayOf(
             "ffmpeg",
-            "-y", // Overwrite output file if it exists
-            "-framerate", "1", // 1 frame per second
-            "-i", tempDir.resolve("frame-%04d.png").pathString,
-            "-i", audioPath.pathString, // Use original audio
-            "-c:a", "aac", // Re-encode audio to AAC
-            "-b:a", "128k",
+            "-y",
+            "-i", inputPath.pathString,
+            "-vf", "scale=-1:360",
+            "-r", "5",
             "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-r", "1", // Set output frame rate
-            proxyVideoPath.pathString
+            "-crf", "32",
+            "-preset", "veryfast",
+            "-c:a", "aac",
+            "-b:a", "32k",
+            "-ac", "1",
+            outputPath.pathString
         )
 
-        runFfmpegCommand(command, "proxy video generation")
-
-        // Clean up temp frame images
-        tempDir.toFile().deleteRecursively()
-
-        return@withContext proxyVideoPath
+        return@withContext runFfmpegCommand(command, "proxy creation")
     }
 
-    suspend fun createFinalVideo(inputPath: Path, metadata: VideoMetadata, outputPath: Path): Path? = withContext(Dispatchers.IO) {
-        val mainTitle = metadata.scenes.firstOrNull()?.title ?: "Untitled Event"
-        val year = metadata.scenes.firstOrNull()?.year ?: "UnknownYear"
-        val finalFileName = "$year - $mainTitle.mp4".replace(Regex("[^a-zA-Z0-9.-]"), "_")
-        val finalOutputPath = outputPath.resolve(finalFileName)
+    suspend fun transcodeSegment(
+        inputPath: Path,
+        outputPath: Path,
+        start: Double,
+        end: Double,
+        metadata: Map<String, String>? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        val duration = end - start
 
-        val command = if (inputPath.toFile().isDirectory) {
-            // Concatenate all VOB files for transcoding (Legacy VOB support)
-            val vobFiles = inputPath.toFile().walk()
-                .filter { it.isFile && it.extension.equals("VOB", ignoreCase = true) }
-                .sorted()
-                .joinToString("|") { it.absolutePath }
-
-             arrayOf(
-                "ffmpeg",
-                "-y",
-                "-i", "concat:$vobFiles",
-                "-c:v", "libx265",
-                "-crf", "18",
-                "-preset", "slower",
-                "-pix_fmt", "yuv420p10le", // 10-bit color
-                "-vf", "bwdif=mode=1", // Deinterlace to 60fps
-                "-c:a", "aac",
-                "-b:a", "256k",
-                "-movflags", "+faststart",
-                finalOutputPath.pathString
-            )
-        } else {
-             // Single file input
-             arrayOf(
-                "ffmpeg",
-                "-y",
-                "-i", inputPath.pathString,
-                "-c:v", "libx265",
-                "-crf", "18",
-                "-preset", "slower",
-                "-pix_fmt", "yuv420p10le", // 10-bit color
-                "-vf", "bwdif=mode=1", // Deinterlace to 60fps
-                "-c:a", "aac",
-                "-b:a", "256k",
-                "-movflags", "+faststart",
-                finalOutputPath.pathString
-            )
+        val metadataArgs = mutableListOf<String>()
+        metadata?.forEach { (key, value) ->
+            metadataArgs.add("-metadata")
+            val ffmpegKey = when(key) {
+                "year" -> "date"
+                "description" -> "comment"
+                else -> key
+            }
+            metadataArgs.add("$ffmpegKey=$value")
         }
 
-        runFfmpegCommand(command, "final video transcoding")
+        // Handle duplicate description for 'description' tag if needed, but 'comment' is standard.
 
-        return@withContext finalOutputPath
+        val baseCommand = mutableListOf(
+            "ffmpeg",
+            "-y",
+            "-ss", start.toString(),
+            "-t", duration.toString(),
+            "-i", inputPath.pathString
+        )
+
+        baseCommand.addAll(metadataArgs)
+
+        baseCommand.addAll(listOf(
+            "-c:v", "libx265",
+            "-crf", "18",
+            "-preset", "slower",
+            "-vf", "bwdif=mode=1,format=yuv420p10le",
+            "-pix_fmt", "yuv420p10le",
+            "-c:a", "aac",
+            "-b:a", "256k",
+            "-movflags", "+faststart",
+            outputPath.pathString
+        ))
+
+        return@withContext runFfmpegCommand(baseCommand.toTypedArray(), "segment transcoding")
     }
 
-    private suspend fun runFfmpegCommand(command: Array<String>, processName: String) {
-        println("Running FFmpeg for $processName: ${command.joinToString(" ")}")
-        try {
+    private suspend fun runFfmpegCommand(command: Array<String>, processName: String): Boolean {
+        // println("Running FFmpeg: ${command.joinToString(" ")}") // Debug logging
+        return try {
             val process = ProcessBuilder(*command)
                 .redirectErrorStream(true)
                 .start()
 
-            process.inputStream.bufferedReader().use { reader ->
-                reader.lines().forEach { println("FFMPEG: $it") }
-            }
+            // Consume output to prevent blocking (deadlock fix)
+            process.inputStream.bufferedReader().use { it.readText() }
 
             val exitCode = process.waitFor()
             if (exitCode != 0) {
-                throw RuntimeException("Error: FFmpeg process for $processName exited with code $exitCode")
+                println("Error: FFmpeg process for $processName exited with code $exitCode")
+                false
             } else {
-                println("Success: FFmpeg process for $processName completed.")
+                true
             }
         } catch (e: Exception) {
-            println("Exception while running FFmpeg for $processName: ${e.message}")
-            throw e
+            println("Exception running FFmpeg for $processName: ${e.message}")
+            false
         }
     }
 }

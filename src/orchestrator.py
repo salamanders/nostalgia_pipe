@@ -13,7 +13,7 @@ from .job_manager import JobManager
 console = Console()
 
 class Orchestrator:
-    def __init__(self):
+    def __init__(self, visionary=None, job_manager=None):
         load_dotenv()
         self.input_path = os.getenv("INPUT_PATH")
         self.output_path = os.getenv("OUTPUT_PATH")
@@ -21,14 +21,21 @@ class Orchestrator:
 
         if not self.input_path or not self.output_path:
             console.print("[bold red]Error:[/bold red] INPUT_PATH and OUTPUT_PATH must be set in .env file.")
-            exit(1)
+            # For testing purposes, we might want to avoid exit if injected
+            if not visionary and not job_manager:
+                 exit(1)
 
         self.scanner = Scanner(self.input_path)
-        self.visionary = Visionary(self.api_key)
+
+        # Dependency Injection or Default
+        self.visionary = visionary if visionary else Visionary(self.api_key)
         self.transcoder = Transcoder()
 
         # Initialize Job Manager
-        self.job_manager = JobManager(os.path.join(self.output_path, "jobs.json"))
+        if job_manager:
+            self.job_manager = job_manager
+        else:
+            self.job_manager = JobManager(os.path.join(self.output_path, "jobs.json"))
 
         # Ensure output directory exists
         Path(self.output_path).mkdir(parents=True, exist_ok=True)
