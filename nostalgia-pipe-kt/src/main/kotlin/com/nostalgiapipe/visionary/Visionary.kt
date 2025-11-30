@@ -62,21 +62,25 @@ open class Visionary(apiKey: String) {
                 return null
             }
 
-            val cleanedJson = responseText.substringAfter("```json").substringBeforeLast("```").trim()
-            return try {
-                json.decodeFromString<VideoMetadata>(cleanedJson)
-            } catch (e: Exception) {
-                // If clean up failed, try raw text just in case it wasn't wrapped in markdown block
-                try {
-                    json.decodeFromString<VideoMetadata>(responseText.trim())
-                } catch (e2: Exception) {
-                    println("Error decoding JSON from Visionary API: ${e.message}")
-                    null
-                }
-            }
+            return parseGeminiResponse(responseText)
         } finally {
             // 5. Clean up the uploaded file
             client.async.files.delete(fileName, null)
+        }
+    }
+
+    fun parseGeminiResponse(responseText: String): VideoMetadata? {
+        val cleanedJson = responseText.substringAfter("```json").substringBeforeLast("```").trim()
+        return try {
+            json.decodeFromString<VideoMetadata>(cleanedJson)
+        } catch (e: Exception) {
+            // If clean up failed, try raw text just in case it wasn't wrapped in markdown block
+            try {
+                json.decodeFromString<VideoMetadata>(responseText.trim())
+            } catch (e2: Exception) {
+                println("Error decoding JSON from Visionary API: ${e.message}")
+                null
+            }
         }
     }
 }

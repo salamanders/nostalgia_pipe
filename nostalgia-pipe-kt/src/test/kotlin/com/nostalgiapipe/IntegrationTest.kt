@@ -13,6 +13,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.exists
+import kotlin.io.path.fileSize
 import kotlin.io.path.copyTo
 import java.io.File
 
@@ -61,8 +62,8 @@ class IntegrationTest {
         val resourcePath = Path.of("src/test/resources/VTS_01_1.VOB")
         assertTrue(resourcePath.exists(), "Test resource not found at $resourcePath")
 
-        // Rename to .mp4 for the test context (transcoder uses it)
-        val inputVideo = inputDir.resolve("test_video.mp4")
+        // Use the static test file directly as VOB to test extension handling
+        val inputVideo = inputDir.resolve("test_video.VOB")
         resourcePath.copyTo(inputVideo)
 
         val config = Config(
@@ -78,11 +79,11 @@ class IntegrationTest {
         orchestrator.submit()
 
         // Verify sidecar exists
-        val sidecar = inputVideo.resolveSibling("test_video.mp4.nostalgia_pipe.json")
+        val sidecar = inputVideo.resolveSibling("test_video.VOB.nostalgia_pipe.json")
         assertTrue(sidecar.exists(), "Sidecar file was not created. Expected at $sidecar")
 
         // Verify proxy exists
-        val proxy = outputDir.resolve("proxy_test_video.mp4.mp4")
+        val proxy = outputDir.resolve("proxy_test_video.VOB.mp4")
         assertTrue(proxy.exists(), "Proxy video was not created/kept. Expected at $proxy")
 
         // Run Finalize Phase
@@ -94,5 +95,16 @@ class IntegrationTest {
 
         assertTrue(output1.exists(), "First scene output was not created. Expected at $output1")
         assertTrue(output2.exists(), "Second scene output was not created. Expected at $output2")
+
+        // Verify file sizes (approx 37KB +/- 30%)
+        assertFileSizeWithinRange(output1, 37000, 0.30)
+        assertFileSizeWithinRange(output2, 37000, 0.30)
+    }
+
+    private fun assertFileSizeWithinRange(file: Path, expectedSize: Long, tolerance: Double) {
+        val size = file.fileSize()
+        val lowerBound = expectedSize * (1 - tolerance)
+        val upperBound = expectedSize * (1 + tolerance)
+        assertTrue(size >= lowerBound && size <= upperBound, "File size $size is not within range [$lowerBound, $upperBound]")
     }
 }
