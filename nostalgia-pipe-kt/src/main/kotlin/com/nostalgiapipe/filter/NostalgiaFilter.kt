@@ -12,27 +12,29 @@ import org.opencv.videoio.VideoCapture
 import org.opencv.videoio.Videoio
 import java.nio.file.Path
 
-data class Frame(val timestamp: Double, val image: Mat)
-
-object NostalgiaFilter {
+object NostalgiaFilter : KeyFrameSelector {
 
     init {
         // Load the native OpenCV library using OpenPnP
-        nu.pattern.OpenCV.loadLocally()
+        try {
+            nu.pattern.OpenCV.loadLocally()
+        } catch (e: Throwable) {
+            println("Warning: Failed to load OpenCV native library: ${e.message}")
+        }
     }
 
     private const val LAPLACIAN_VARIANCE_THRESHOLD = 100.0
     private const val SSIM_THRESHOLD = 0.98
-    private const val FRAME_SKIP = 5 // Process every 5th frame to speed up analysis
+    private const val FRAME_SKIP = 5
 
-    suspend fun selectKeyFrames(videoPath: Path): List<Frame> = withContext(Dispatchers.IO) {
+    override suspend fun selectKeyFrames(videoPath: Path): List<Double> = withContext(Dispatchers.IO) {
         val cap = VideoCapture(videoPath.toString())
         if (!cap.isOpened) {
             println("Error: Could not open video file: $videoPath")
             return@withContext emptyList()
         }
 
-        val keyFrames = mutableListOf<Frame>()
+        val keyFrames = mutableListOf<Double>()
         var previousFrame: Mat? = null
         var frameIndex = 0
 
@@ -49,14 +51,12 @@ object NostalgiaFilter {
                     continue
                 }
 
-                // 1. Blur Detection
                 if (!isBlurry(frame)) {
-                    // 2. Scene Change Detection
                     if (previousFrame == null || isSceneChange(previousFrame, frame)) {
-                        val timestamp = cap.get(Videoio.CAP_PROP_POS_MSEC)
-                        keyFrames.add(Frame(timestamp, frame.clone())) // Clone frame to store it
-                        previousFrame?.release() // Release old previous frame
-                        previousFrame = frame.clone() // Clone new frame to be the next previous frame
+                        val timestamp = cap.get(Videoio.CAP_PROP_POS_MSEC) / 1000.0
+                        keyFrames.add(timestamp)
+                        previousFrame?.release()
+                        previousFrame = frame.clone()
                     }
                 }
 
@@ -68,15 +68,14 @@ object NostalgiaFilter {
             previousFrame?.release()
         }
 
-        // If no keyframes were found (e.g., short video), take the first non-blurry one
         if (keyFrames.isEmpty()) {
-            findFirstGoodFrame(videoPath)?.let { keyFrames.add(it) }
+            findFirstGoodFrameTimestamp(videoPath)?.let { keyFrames.add(it) }
         }
 
         return@withContext keyFrames
     }
 
-    private fun findFirstGoodFrame(videoPath: Path): Frame? {
+    private fun findFirstGoodFrameTimestamp(videoPath: Path): Double? {
         val cap = VideoCapture(videoPath.toString())
         if (!cap.isOpened) return null
 
@@ -85,7 +84,9 @@ object NostalgiaFilter {
                 val frame = Mat()
                 if (!cap.read(frame)) break
                 if(!isBlurry(frame)) {
-                    return Frame(cap.get(Videoio.CAP_PROP_POS_MSEC), frame.clone())
+                    val ts = cap.get(Videoio.CAP_PROP_POS_MSEC) / 1000.0
+                    frame.release()
+                    return ts
                 }
                 frame.release()
             }

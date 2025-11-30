@@ -3,6 +3,7 @@ package com.nostalgiapipe.orchestrator
 import com.github.ajalt.mordant.rendering.TextColors.*
 import com.github.ajalt.mordant.terminal.Terminal
 import com.nostalgiapipe.config.Config
+import com.nostalgiapipe.filter.KeyFrameSelector
 import com.nostalgiapipe.filter.NostalgiaFilter
 import com.nostalgiapipe.models.VideoMetadata
 import com.nostalgiapipe.scanner.Scanner
@@ -17,10 +18,14 @@ import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.io.path.name
+import com.nostalgiapipe.models.Scene
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 
 class Orchestrator(
     private val config: Config,
-    private val visionary: Visionary = Visionary(config.googleApiKey)
+    private val visionary: Visionary = Visionary(config.googleApiKey),
+    private val frameSelector: KeyFrameSelector = NostalgiaFilter
 ) {
 
     private val terminal = Terminal()
@@ -45,7 +50,7 @@ class Orchestrator(
             terminal.println("Processing: ${blue(videoPath.toString())}")
 
             terminal.println("  - Selecting keyframes...")
-            val keyFrames = NostalgiaFilter.selectKeyFrames(videoPath)
+            val keyFrames = frameSelector.selectKeyFrames(videoPath)
             if (keyFrames.isEmpty()) {
                 terminal.println(red("  - Error: Could not select any keyframes."))
                 return@forEach
@@ -91,20 +96,62 @@ class Orchestrator(
 
             try {
                 val metadata = json.decodeFromString<VideoMetadata>(sidecarFile.readText())
+                terminal.println(green("  - Found ${metadata.scenes.size} scenes."))
 
-                terminal.println("  - Transcoding final high-quality video...")
-                val finalVideo = Transcoder.createFinalVideo(videoPath, metadata, Path(config.outputPath))
+                var successCount = 0
+                metadata.scenes.forEachIndexed { index, scene ->
+                    terminal.println("  - Processing Scene ${index + 1}: ${scene.title}")
 
-                if (finalVideo != null) {
-                    terminal.println(green("  - Successfully created final video: $finalVideo"))
-                    sidecarFile.toFile().delete()
-                    terminal.println(cyan("  - Removed sidecar file."))
-                } else {
-                    terminal.println(red("  - Error: Failed to create final video."))
+                    val baseName = "${scene.year} - ${scene.title}"
+                    val safeName = baseName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+                    val fileName = "$safeName.mp4"
+                    val outputFilePath = Path(config.outputPath).resolve(fileName)
+
+                    val startTime = parseTimestamp(scene.start)
+                    val endTime = parseTimestamp(scene.end)
+
+                    if (startTime != null && endTime != null) {
+                        val result = Transcoder.transcodeSegment(videoPath, outputFilePath, startTime, endTime)
+                        if (result != null) {
+                            terminal.println(green("    - Created: $fileName"))
+                            successCount++
+                        } else {
+                            terminal.println(red("    - Failed to transcode: $fileName"))
+                        }
+                    } else {
+                         terminal.println(red("    - Invalid timestamps for scene: ${scene.start} - ${scene.end}"))
+                    }
                 }
+
+                if (successCount == metadata.scenes.size) {
+                    sidecarFile.toFile().delete()
+                    terminal.println(cyan("  - All scenes processed. Removed sidecar file."))
+                } else {
+                    terminal.println(yellow("  - Warning: Some scenes failed. Sidecar file preserved."))
+                }
+
             } catch (e: Exception) {
                 terminal.println(red("  - Error processing ${videoPath.fileName}: ${e.message}"))
+                e.printStackTrace()
             }
+        }
+    }
+
+    private fun parseTimestamp(timestamp: String): Double? {
+        // Formats: "HH:MM:SS", "MM:SS", "SS" or just a number
+        try {
+             if (timestamp.contains(":")) {
+                val parts = timestamp.split(":").map { it.toDouble() }
+                return when (parts.size) {
+                    3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
+                    2 -> parts[0] * 60 + parts[1]
+                    else -> null
+                }
+             } else {
+                 return timestamp.toDoubleOrNull()
+             }
+        } catch (e: Exception) {
+            return null
         }
     }
 }

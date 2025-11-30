@@ -1,7 +1,0 @@
-ffmpeg-python
-rich
-google-genai
-python-dotenv
-scenedetect
-opencv-python-headless
-scikit-image
