@@ -52,7 +52,7 @@ open class Visionary(apiKey: String) {
                 .build()
 
             // 4. Batch Processing
-            val modelId = "gemini-1.5-flash"
+            val modelId = "gemini-3-pro-preview"
 
             val inlinedRequest = InlinedRequest.builder()
                 .model(modelId)
