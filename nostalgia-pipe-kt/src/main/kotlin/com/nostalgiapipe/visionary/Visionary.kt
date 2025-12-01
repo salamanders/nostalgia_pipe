@@ -1,13 +1,10 @@
 package com.nostalgiapipe.visionary
 
 import com.google.genai.Client
-import com.google.genai.types.Content
-import com.google.genai.types.GenerateContentConfig
-import com.google.genai.types.MediaResolution
-import com.google.genai.types.Part
-import com.google.genai.types.UploadFileConfig
+import com.google.genai.types.*
 import com.nostalgiapipe.models.VideoMetadata
 import com.nostalgiapipe.utils.toNullable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.serialization.json.Json
 import java.nio.file.Path
@@ -41,6 +38,8 @@ open class Visionary(apiKey: String) {
             return null
         }
 
+        var batchJobName: String? = null
+
         try {
             // 2. Create the prompt using the file's URI
             val videoPart = Part.fromUri(fileName, "video/mp4")
@@ -52,9 +51,64 @@ open class Visionary(apiKey: String) {
                 .mediaResolution("MEDIA_RESOLUTION_LOW")
                 .build()
 
-            // 4. Generate the content
-            val responseFuture = client.async.models.generateContent("gemini-3-pro-preview", content, config)
-            val response = responseFuture.await()
+            // 4. Batch Processing
+            val modelId = "gemini-1.5-flash"
+
+            val inlinedRequest = InlinedRequest.builder()
+                .model(modelId)
+                .contents(listOf(content))
+                .config(config)
+                .build()
+
+            val source = BatchJobSource.builder()
+                .inlinedRequests(listOf(inlinedRequest))
+                .build()
+
+            val batchConfig = CreateBatchJobConfig.builder().build()
+
+            println("Creating Batch Job with $modelId...")
+            var job = client.async.batches.create(modelId, source, batchConfig).await()
+            batchJobName = job.name().orElse(null)
+
+            println("Batch job created: $batchJobName. Waiting for completion...")
+
+            // Poll for completion
+            while (true) {
+                // Wait before polling (start with 10s)
+                delay(10000)
+
+                // get requires config, pass null
+                job = client.async.batches.get(batchJobName, null).await()
+
+                val jobState = job.state().orElse(null)
+                val stateEnum = jobState?.knownEnum()
+
+                if (stateEnum == JobState.Known.JOB_STATE_SUCCEEDED) {
+                    println("Batch job succeeded.")
+                    break
+                } else if (stateEnum == JobState.Known.JOB_STATE_FAILED ||
+                           stateEnum == JobState.Known.JOB_STATE_CANCELLED ||
+                           stateEnum == JobState.Known.JOB_STATE_EXPIRED) {
+                    val errorMsg = job.error().map { it.message().orElse("Unknown error") }.orElse("Unknown error")
+                    println("Batch job failed with state $stateEnum: $errorMsg")
+                    return null
+                }
+                println("Batch job status: $stateEnum")
+            }
+
+            // 5. Retrieve result
+            // With inline requests, results are in inlinedResponses
+            val responses = job.dest().flatMap { it.inlinedResponses() }.orElse(emptyList())
+            if (responses.isEmpty()) {
+                println("Error: Batch job succeeded but no responses found.")
+                return null
+            }
+
+            val response = responses[0].response().orElse(null)
+            if (response == null) {
+                 println("Error: Response object is null.")
+                 return null
+            }
 
             val responseText = response.text()
             if (responseText.isNullOrBlank()) {
@@ -63,9 +117,16 @@ open class Visionary(apiKey: String) {
             }
 
             return parseGeminiResponse(responseText)
+
         } finally {
-            // 5. Clean up the uploaded file
-            client.async.files.delete(fileName, null)
+            // 6. Clean up
+            // Delete the video file
+            // delete requires config, pass null
+            try {
+                client.async.files.delete(fileName, null)
+            } catch (e: Exception) {
+                println("Warning: Failed to delete file $fileName: ${e.message}")
+            }
         }
     }
 
