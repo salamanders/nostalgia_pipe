@@ -9,43 +9,30 @@ import kotlin.io.path.extension
 
 object Transcoder {
 
-    suspend fun createProxyVideo(timestamps: List<Double>, inputPath: Path, outputPath: Path): Path? = withContext(Dispatchers.IO) {
-        if (timestamps.isEmpty()) return@withContext null
-
+    suspend fun createProxyVideo(inputPath: Path, outputPath: Path): Path? = withContext(Dispatchers.IO) {
         val proxyVideoPath = outputPath.resolve("proxy_${inputPath.fileName}.mp4")
 
-        // Build select filter string: "between(t,ts,ts+0.001)+..."
-        val selectFilter = timestamps.joinToString("+") { ts ->
-            "between(t,$ts,${ts + 0.001})"
-        }
+        // Using thumbnail filter to pick representative frames (1 every 150 frames),
+        // drawing timestamp, and condensing video into a slideshow.
+        // We use double backslash for escaping the colon in pts function for the drawtext filter.
+        val filterChain = "thumbnail=150,scale=480:-1,drawtext=text='%{pts\\:hms}':x=(w-text_w-10):y=(h-text_h-10):fontsize=24:fontcolor=yellow:box=1:boxcolor=black@0.5,setpts=N/FRAME_RATE/TB"
 
         val command = arrayOf(
             "ffmpeg",
             "-y",
             "-i", inputPath.pathString,
-            "-filter:v", "select='$selectFilter',setpts=N/FRAME_RATE/TB,scale=-1:360",
+            "-filter:v", filterChain,
             "-c:v", "libx264",
             "-crf", "28",
             "-preset", "fast",
-            "-c:a", "aac",
-            "-b:a", "64k",
+            "-an", // Remove audio as this is a condensed slideshow
             "-movflags", "+faststart",
             proxyVideoPath.pathString
         )
 
-        runFfmpegCommand(command, "proxy video generation")
+        runFfmpegCommand(command, "smart proxy generation")
 
         return@withContext proxyVideoPath
-    }
-
-    suspend fun createFinalVideo(inputPath: Path, metadata: VideoMetadata, outputPath: Path): Path? = withContext(Dispatchers.IO) {
-        // This method might be deprecated or needs to loop through scenes.
-        // For strict compliance with the plan, I am leaving it as a fallback or upgrading it to handle the first scene
-        // but the 'finalize' method in Orchestrator will be calling a new segment method.
-        // Let's implement transcodeSegment instead and remove this logic if unused,
-        // OR update this to handle single-file scenarios.
-        // Given the prompt: "Update Transcoder to Support Segment Transcoding", I will add transcodeSegment.
-        return@withContext null
     }
 
     suspend fun transcodeSegment(inputPath: Path, outputPath: Path, start: Double, end: Double): Path? = withContext(Dispatchers.IO) {

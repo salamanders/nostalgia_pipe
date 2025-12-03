@@ -1,7 +1,6 @@
 package com.nostalgiapipe
 
 import com.nostalgiapipe.config.Config
-import com.nostalgiapipe.filter.KeyFrameSelector
 import com.nostalgiapipe.models.Scene
 import com.nostalgiapipe.models.VideoMetadata
 import com.nostalgiapipe.orchestrator.Orchestrator
@@ -46,13 +45,6 @@ class IntegrationTest {
         }
     }
 
-    class MockKeyFrameSelector : KeyFrameSelector {
-        override suspend fun selectKeyFrames(videoPath: Path): List<Double> {
-            // Return fake timestamps (e.g., every 1 second)
-            return listOf(0.0, 1.0, 2.0, 3.0, 4.0)
-        }
-    }
-
     @Test
     fun `full pipeline test with multiple scenes`() = runBlocking {
         val inputDir = createTempDirectory("input")
@@ -72,8 +64,8 @@ class IntegrationTest {
             googleApiKey = "fake_key"
         )
 
-        // Inject Mock Visionary and Mock KeyFrameSelector to bypass OpenCV issues
-        val orchestrator = Orchestrator(config, MockVisionary(), MockKeyFrameSelector())
+        // Inject Mock Visionary to bypass AI calls
+        val orchestrator = Orchestrator(config, MockVisionary())
 
         // Run Submit Phase
         orchestrator.submit()

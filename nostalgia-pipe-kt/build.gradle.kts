@@ -27,9 +27,6 @@ dependencies {
     // Terminal UI
     implementation("com.github.ajalt.mordant:mordant:2.4.0")
 
-    // OpenCV for Frame Analysis
-    implementation("org.openpnp:opencv:4.9.0-0")
-
     // Logging
     implementation("io.github.microutils:kotlin-logging:3.0.5")
     implementation("ch.qos.logback:logback-classic:1.4.14")
