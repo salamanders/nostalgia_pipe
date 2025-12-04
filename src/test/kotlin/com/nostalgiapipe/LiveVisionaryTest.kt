@@ -1,7 +1,6 @@
 package com.nostalgiapipe
 
 import com.nostalgiapipe.config.Config
-import com.nostalgiapipe.filter.KeyFrameSelector
 import com.nostalgiapipe.models.VideoMetadata
 import com.nostalgiapipe.orchestrator.Orchestrator
 import kotlinx.coroutines.runBlocking
@@ -19,14 +18,6 @@ import kotlin.io.path.listDirectoryEntries
 
 class LiveVisionaryTest {
 
-    // Simple implementation to bypass OpenCV in CI environment
-    class SimpleKeyFrameSelector : KeyFrameSelector {
-        override suspend fun selectKeyFrames(videoPath: Path): List<Double> {
-            // Return timestamps for a 5-second video (0, 1, 2, 3, 4)
-            return listOf(0.0, 1.0, 2.0, 3.0, 4.0)
-        }
-    }
-
     @Test
     fun `live pipeline test with real Gemini API`() = runBlocking {
         val apiKey = System.getenv("GEMINI_API_KEY")
@@ -38,7 +29,9 @@ class LiveVisionaryTest {
         val outputDir = createTempDirectory("live_output")
 
         // Use the static test file
-        val resourcePath = Path.of("src/test/resources/VTS_01_1.VOB")
+        val resourceUrl = this.javaClass.classLoader.getResource("VTS_01_1.VOB")
+        assertTrue(resourceUrl != null, "Test resource VTS_01_1.VOB not found in classpath")
+        val resourcePath = Path.of(resourceUrl!!.toURI())
         assertTrue(resourcePath.exists(), "Test resource not found at $resourcePath")
 
         // Copy VOB to input directory
@@ -51,8 +44,8 @@ class LiveVisionaryTest {
             googleApiKey = apiKey
         )
 
-        // Use real Visionary but SimpleKeyFrameSelector
-        val orchestrator = Orchestrator(config, frameSelector = SimpleKeyFrameSelector())
+        // Use real Visionary
+        val orchestrator = Orchestrator(config)
 
         // --- SUBMIT PHASE ---
         println("Running Submit Phase...")
