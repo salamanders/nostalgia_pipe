@@ -52,7 +52,7 @@ open class Visionary(apiKey: String) {
                 .build()
 
             // 4. Batch Processing
-            val modelId = "gemini-1.5-flash"
+            val modelId = "gemini-3-pro-preview"
 
             val inlinedRequest = InlinedRequest.builder()
                 .model(modelId)
@@ -67,7 +67,14 @@ open class Visionary(apiKey: String) {
             val batchConfig = CreateBatchJobConfig.builder().build()
 
             println("Creating Batch Job with $modelId...")
-            var job = client.async.batches.create(modelId, source, batchConfig).await()
+            var job: BatchJob
+            try {
+                job = client.async.batches.create(modelId, source, batchConfig).await()
+            } catch (e: Exception) {
+                println("Error creating batch job: ${e.message}")
+                e.printStackTrace()
+                throw e
+            }
             batchJobName = job.name().orElse(null)
 
             println("Batch job created: $batchJobName. Waiting for completion...")
