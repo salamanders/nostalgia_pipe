@@ -3,8 +3,6 @@ package com.nostalgiapipe.orchestrator
 import com.github.ajalt.mordant.rendering.TextColors.*
 import com.github.ajalt.mordant.terminal.Terminal
 import com.nostalgiapipe.config.Config
-import com.nostalgiapipe.filter.KeyFrameSelector
-import com.nostalgiapipe.filter.NostalgiaFilter
 import com.nostalgiapipe.models.VideoMetadata
 import com.nostalgiapipe.scanner.Scanner
 import com.nostalgiapipe.transcoder.Transcoder
@@ -17,15 +15,10 @@ import kotlin.io.path.Path
 import kotlin.io.path.exists
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
-import kotlin.io.path.name
-import com.nostalgiapipe.models.Scene
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
 
 class Orchestrator(
     private val config: Config,
-    private val visionary: Visionary = Visionary(config.googleApiKey),
-    private val frameSelector: KeyFrameSelector = NostalgiaFilter
+    private val visionary: Visionary = Visionary(config.googleApiKey)
 ) {
 
     private val terminal = Terminal()
@@ -49,22 +42,13 @@ class Orchestrator(
 
             terminal.println("Processing: ${blue(videoPath.toString())}")
 
-            terminal.println("  - Selecting keyframes...")
-            val keyFrames = frameSelector.selectKeyFrames(videoPath)
-            if (keyFrames.isEmpty()) {
-                terminal.println(red("  - Error: Could not select any keyframes."))
-                return@forEach
-            }
-            terminal.println(green("  - Found ${keyFrames.size} keyframes."))
-
-            terminal.println("  - Creating proxy video...")
-            val proxyVideo = Transcoder.createProxyVideo(keyFrames, videoPath, Path(config.outputPath))
+            terminal.println("  - Creating proxy video with smart scene detection...")
+            val proxyVideo = Transcoder.createProxyVideo(videoPath, Path(config.outputPath))
             if (proxyVideo == null) {
                 terminal.println(red("  - Error: Failed to create proxy video."))
                 return@forEach
             }
             terminal.println(green("  - Proxy video created at: $proxyVideo"))
-            // Keep proxy for inspection
 
             terminal.println("  - Analyzing video with Gemini AI (this may take a moment)...")
             val metadata = visionary.analyzeVideo(proxyVideo)
