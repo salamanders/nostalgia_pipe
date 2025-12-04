@@ -1,9 +1,10 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     kotlin("jvm") version "2.0.0"
     application
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.0.0"
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.2.21"
 
 }
 
@@ -17,9 +18,9 @@ repositories {
 
 dependencies {
     // Kotlinx
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.8.1") // For CompletableFuture.await()
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.2") // For CompletableFuture.await()
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
 
     // Google Gemini
     implementation("com.google.genai:google-genai:1.28.0")
@@ -49,8 +50,8 @@ tasks.test {
 }
 
 tasks.withType<KotlinCompile> {
-    kotlinOptions.jvmTarget = "21"
-    kotlinOptions.freeCompilerArgs += "-opt-in=kotlin.RequiresOptIn"
+    compilerOptions.jvmTarget.set(JvmTarget.JVM_21)
+    compilerOptions.freeCompilerArgs.add("-opt-in=kotlin.RequiresOptIn")
 }
 
 application {
