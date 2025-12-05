@@ -538,3 +538,4 @@ $RECYCLE.BIN/
 /.gradle/vcs-1/
 /.gradle/file-system.probe
 /.gradle/9.2.1/
+.gradle/
