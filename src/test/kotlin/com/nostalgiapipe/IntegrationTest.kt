@@ -51,7 +51,9 @@ class IntegrationTest {
         val outputDir = createTempDirectory("output")
 
         // Use the static test file
-        val resourcePath = Path.of("src/test/resources/VTS_01_1.VOB")
+        val resourceUrl = this.javaClass.classLoader.getResource("VTS_01_1.VOB")
+        assertTrue(resourceUrl != null, "Test resource VTS_01_1.VOB not found in classpath")
+        val resourcePath = Path.of(resourceUrl!!.toURI())
         assertTrue(resourcePath.exists(), "Test resource not found at $resourcePath")
 
         // Use the static test file directly as VOB to test extension handling
