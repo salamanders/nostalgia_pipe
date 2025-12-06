@@ -19,7 +19,7 @@ import java.io.File
 class IntegrationTest {
 
     class MockVisionary : Visionary("fake_key") {
-        override suspend fun analyzeVideo(proxyVideoPath: Path): VideoMetadata? {
+        override suspend fun analyzeVideo(proxyVideoPath: Path, originalVideoPath: Path?): VideoMetadata? {
             return VideoMetadata(
                 scenes = listOf(
                     Scene(

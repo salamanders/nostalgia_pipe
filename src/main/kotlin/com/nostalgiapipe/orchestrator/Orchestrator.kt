@@ -51,7 +51,7 @@ class Orchestrator(
             terminal.println(green("  - Proxy video created at: $proxyVideo"))
 
             terminal.println("  - Analyzing video with Gemini AI (this may take a moment)...")
-            val metadata = visionary.analyzeVideo(proxyVideo)
+            val metadata = visionary.analyzeVideo(proxyVideo, videoPath)
             if (metadata == null) {
                 terminal.println(red("  - Error: Failed to get analysis from Visionary AI."))
                 return@forEach

@@ -14,17 +14,27 @@ open class Visionary(apiKey: String) {
     private val client = Client.builder().apiKey(apiKey).build()
     private val json = Json { ignoreUnknownKeys = true }
 
-    open suspend fun analyzeVideo(proxyVideoPath: Path): VideoMetadata? {
+    open suspend fun analyzeVideo(proxyVideoPath: Path, originalVideoPath: Path? = null): VideoMetadata? {
+        val pathContext = if (originalVideoPath != null) {
+            "Context from file path: $originalVideoPath"
+        } else {
+            ""
+        }
+
         val prompt = """
             Analyze this video of a home movie and provide a structured JSON output. The video contains a series of keyframes from a single event. Your task is to identify the main event, break it down into distinct scenes, and provide the following details for each scene:
+
+            $pathContext
 
             - Title: A short, descriptive title for the scene (e.g., "Opening Presents," "Singing Happy Birthday").
             - Description: A one-sentence summary of what happens in the scene.
             - Year: The estimated year the video was filmed.
             - Location: The estimated location (e.g., "Living Room," "Backyard").
             - People: A list of people identified in the scene.
+            - Start: The start timestamp of the scene (e.g., "MM:SS").
+            - End: The end timestamp of the scene (e.g., "MM:SS").
 
-            The final output must be a single JSON object with a "scenes" key, which contains a list of these scene objects. Do not include any text or formatting outside of the JSON object itself.
+            The final output must be a single JSON object with a "scenes" key, which contains a list of these scene objects.
         """.trimIndent()
 
         // 1. Upload the file to the Files API
@@ -46,9 +56,42 @@ open class Visionary(apiKey: String) {
             val promptPart = Part.fromText(prompt)
             val content = Content.fromParts(promptPart, videoPart)
 
-            // 3. Configure Media Resolution
+            // 3. Configure Media Resolution and Schema
+            val responseSchema = Schema.builder()
+                .type(Type.Known.OBJECT)
+                .properties(
+                    mapOf(
+                        "scenes" to Schema.builder()
+                            .type(Type.Known.ARRAY)
+                            .items(
+                                Schema.builder()
+                                    .type(Type.Known.OBJECT)
+                                    .properties(
+                                        mapOf(
+                                            "title" to Schema.builder().type(Type.Known.STRING).build(),
+                                            "description" to Schema.builder().type(Type.Known.STRING).build(),
+                                            "year" to Schema.builder().type(Type.Known.STRING).build(),
+                                            "location" to Schema.builder().type(Type.Known.STRING).build(),
+                                            "people" to Schema.builder().type(Type.Known.ARRAY)
+                                                .items(Schema.builder().type(Type.Known.STRING).build())
+                                                .build(),
+                                            "start" to Schema.builder().type(Type.Known.STRING).build(),
+                                            "end" to Schema.builder().type(Type.Known.STRING).build()
+                                        )
+                                    )
+                                    .required(listOf("title", "description", "year", "location", "people", "start", "end"))
+                                    .build()
+                            )
+                            .build()
+                    )
+                )
+                .required(listOf("scenes"))
+                .build()
+
             val config = GenerateContentConfig.builder()
                 .mediaResolution("MEDIA_RESOLUTION_LOW")
+                .responseMimeType("application/json")
+                .responseSchema(responseSchema)
                 .build()
 
             // 4. Batch Processing
