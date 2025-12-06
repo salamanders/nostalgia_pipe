@@ -34,8 +34,10 @@ class LiveVisionaryTest {
         val resourcePath = Path.of(resourceUrl!!.toURI())
         assertTrue(resourcePath.exists(), "Test resource not found at $resourcePath")
 
-        // Copy VOB to input directory
-        val inputVideo = inputDir.resolve("test_video_live.VOB")
+        // Copy VOB to input directory with a meaningful parent directory to test path context
+        val contextDir = inputDir.resolve("1999 New Years Party")
+        contextDir.toFile().mkdirs()
+        val inputVideo = contextDir.resolve("tape_01.VOB")
         resourcePath.copyTo(inputVideo)
 
         val config = Config(
@@ -52,7 +54,7 @@ class LiveVisionaryTest {
         orchestrator.submit()
 
         // Verify sidecar exists
-        val sidecar = inputVideo.resolveSibling("test_video_live.VOB.nostalgia_pipe.json")
+        val sidecar = inputVideo.resolveSibling("tape_01.VOB.nostalgia_pipe.json")
         assertTrue(sidecar.exists(), "Sidecar file was not created at $sidecar")
 
         // Parse sidecar to check for valid content
@@ -72,10 +74,17 @@ class LiveVisionaryTest {
             // Inspect first scene
             val firstScene = metadata.scenes[0]
             println("First Scene Detected: Title='${firstScene.title}', Year='${firstScene.year}', Start='${firstScene.start}', End='${firstScene.end}'")
+
+            // Check if the path context influence the result (Soft assertion as AI is probabilistic)
+            if (firstScene.year == "1999") {
+                println("SUCCESS: Gemini correctly inferred year 1999 from the file path context!")
+            } else {
+                println("WARNING: Gemini did not infer year 1999. Detected: ${firstScene.year}")
+            }
         }
 
         // Verify proxy exists
-        val proxy = outputDir.resolve("proxy_test_video_live.VOB.mp4")
+        val proxy = outputDir.resolve("proxy_tape_01.VOB.mp4")
         assertTrue(proxy.exists(), "Proxy video was not created at $proxy")
 
         // --- FINALIZE PHASE ---
