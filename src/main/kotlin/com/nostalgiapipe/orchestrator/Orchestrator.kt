@@ -34,33 +34,38 @@ class Orchestrator(
         }
 
         videoFiles.forEach { videoPath ->
-            val sidecarFile = videoPath.resolveSibling("${videoPath.fileName}.nostalgia_pipe.json")
-            if (sidecarFile.exists()) {
-                terminal.println(cyan("Skipping ${videoPath.fileName}: Already processed (sidecar file exists)."))
-                return@forEach
+            try {
+                val sidecarFile = videoPath.resolveSibling("${videoPath.fileName}.nostalgia_pipe.json")
+                if (sidecarFile.exists()) {
+                    terminal.println(cyan("Skipping ${videoPath.fileName}: Already processed (sidecar file exists)."))
+                    return@forEach
+                }
+
+                terminal.println("Processing: ${blue(videoPath.toString())}")
+
+                terminal.println("  - Creating proxy video with smart scene detection...")
+                val proxyVideo = Transcoder.createProxyVideo(videoPath, Path(config.outputPath))
+                if (proxyVideo == null) {
+                    terminal.println(red("  - Error: Failed to create proxy video."))
+                    return@forEach
+                }
+                terminal.println(green("  - Proxy video created at: $proxyVideo"))
+
+                terminal.println("  - Analyzing video with Gemini AI (this may take a moment)...")
+                val metadata = visionary.analyzeVideo(proxyVideo, videoPath)
+                if (metadata == null) {
+                    terminal.println(red("  - Error: Failed to get analysis from Visionary AI."))
+                    return@forEach
+                }
+                terminal.println(green("  - AI analysis complete."))
+
+                val metadataJson = json.encodeToString(metadata)
+                sidecarFile.writeText(metadataJson)
+                terminal.println(green("  - Metadata saved to sidecar file: $sidecarFile"))
+            } catch (e: Exception) {
+                terminal.println(red("  - Unhandled error processing ${videoPath.fileName}: ${e.message}"))
+                e.printStackTrace()
             }
-
-            terminal.println("Processing: ${blue(videoPath.toString())}")
-
-            terminal.println("  - Creating proxy video with smart scene detection...")
-            val proxyVideo = Transcoder.createProxyVideo(videoPath, Path(config.outputPath))
-            if (proxyVideo == null) {
-                terminal.println(red("  - Error: Failed to create proxy video."))
-                return@forEach
-            }
-            terminal.println(green("  - Proxy video created at: $proxyVideo"))
-
-            terminal.println("  - Analyzing video with Gemini AI (this may take a moment)...")
-            val metadata = visionary.analyzeVideo(proxyVideo, videoPath)
-            if (metadata == null) {
-                terminal.println(red("  - Error: Failed to get analysis from Visionary AI."))
-                return@forEach
-            }
-            terminal.println(green("  - AI analysis complete."))
-
-            val metadataJson = json.encodeToString(metadata)
-            sidecarFile.writeText(metadataJson)
-            terminal.println(green("  - Metadata saved to sidecar file: $sidecarFile"))
         }
     }
 
@@ -76,9 +81,9 @@ class Orchestrator(
 
         videoFiles.forEach { videoPath ->
             terminal.println("Finalizing: ${blue(videoPath.toString())}")
-            val sidecarFile = videoPath.resolveSibling("${videoPath.fileName}.nostalgia_pipe.json")
-
             try {
+                val sidecarFile = videoPath.resolveSibling("${videoPath.fileName}.nostalgia_pipe.json")
+
                 val metadata = json.decodeFromString<VideoMetadata>(sidecarFile.readText())
                 terminal.println(green("  - Found ${metadata.scenes.size} scenes."))
 

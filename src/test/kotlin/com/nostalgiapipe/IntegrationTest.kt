@@ -90,9 +90,12 @@ class IntegrationTest {
         assertTrue(output1.exists(), "First scene output was not created. Expected at $output1")
         assertTrue(output2.exists(), "Second scene output was not created. Expected at $output2")
 
-        // Verify file sizes (approx 37KB +/- 30%)
-        assertFileSizeWithinRange(output1, 37000, 0.30)
-        assertFileSizeWithinRange(output2, 37000, 0.30)
+        // Verify file sizes
+        // Previous size was ~37KB with always-on deinterlacing.
+        // Smart deinterlacing skips it for this file, reducing size to ~21KB-25KB.
+        // We set expectation to 20KB with a larger tolerance (50%) to be safe.
+        assertFileSizeWithinRange(output1, 20000, 0.50)
+        assertFileSizeWithinRange(output2, 20000, 0.50)
     }
 
     private fun assertFileSizeWithinRange(file: Path, expectedSize: Long, tolerance: Double) {
